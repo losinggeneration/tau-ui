@@ -211,6 +211,23 @@ for (const name of ["responseError", "sendError", "timeout"]) {
   document.body.addEventListener(`htmx:${name}`, requestError);
 }
 
+// Show progress on the instance card itself; the list doesn't refresh under it.
+let lifecycleBusy = false;
+document.body.addEventListener("htmx:beforeRequest", event => {
+  const button = event.detail.elt?.closest?.(".instance-actions form")?.querySelector("[data-busy-label]");
+  if (!button || event.defaultPrevented) return;
+  lifecycleBusy = true;
+  button.dataset.label = button.textContent;
+  button.textContent = button.dataset.busyLabel;
+  document.querySelector("#lifecycle-notice").textContent = "";
+});
+document.body.addEventListener("htmx:afterRequest", event => {
+  const button = event.detail.elt?.closest?.(".instance-actions form")?.querySelector("[data-busy-label]");
+  if (!button) return;
+  lifecycleBusy = false;
+  if (button.dataset.label) button.textContent = button.dataset.label;
+});
+
 document.body.addEventListener("htmx:beforeRequest", event => {
   const source = event.detail.elt;
   if (source && (source === feed || source === instances)) {
@@ -259,7 +276,7 @@ document.body.addEventListener("htmx:beforeSwap", event => {
   if (target === instances) {
     const response = event.detail.serverResponse.trim();
     const refreshing = event.detail.requestConfig.triggeringEvent?.type === "instanceListRefresh";
-    if (!refreshing && (instances.contains(document.activeElement) || instances.lastResponse === response)) {
+    if (lifecycleBusy || (!refreshing && (instances.contains(document.activeElement) || instances.lastResponse === response))) {
       event.detail.shouldSwap = false;
     } else if (event.detail.shouldSwap) {
       instances.lastResponse = response;

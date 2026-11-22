@@ -91,6 +91,9 @@ func TestHTTPToCoordinator(t *testing.T) {
 			t.Fatalf("GET %s: %d, missing %q: %.1500s", check.path, w.Code, check.want, w.Body.String())
 		}
 	}
+	if list := request(http.MethodGet, "/instances", true, "", nil).Body.String(); strings.Contains(list, `hx-confirm="Restart`) || !strings.Contains(list, `data-busy-label="Restarting…"`) {
+		t.Error("restart should run without a confirmation dialog and show progress on the card")
+	}
 	w := request(http.MethodGet, "/worker/worker", true, "", nil)
 	for _, want := range []string{"<strong>Bold</strong>", `class="chroma"`, "Partial reply", "Approve changes", "notes.txt", "Reading lines", "Queued messages", "A pending follow-up", `data-queue-edit="queued-1"`} {
 		if !strings.Contains(w.Body.String(), want) {

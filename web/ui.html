@@ -136,14 +136,14 @@
         <input type="hidden" name="session" value="{{.SessionID}}">
         <input type="hidden" name="active" value="{{$.Active}}">
         <input type="hidden" name="op" value="stop">
-        <button class="quiet" type="submit" aria-label="Stop {{project .CWD}}">Stop</button>
+        <button class="quiet" type="submit" aria-label="Stop {{project .CWD}}" data-busy-label="Stopping…">Stop</button>
       </form>
       {{if $.Restart}}
-      <form method="post" hx-post="/worker/{{.ID}}/lifecycle" hx-confirm="Restart {{project .CWD}} using the same session?">
+      <form method="post" hx-post="/worker/{{.ID}}/lifecycle">
         <input type="hidden" name="session" value="{{.SessionID}}">
         <input type="hidden" name="active" value="{{$.Active}}">
         <input type="hidden" name="op" value="restart">
-        <button class="quiet" type="submit" aria-label="Restart {{project .CWD}}">Restart</button>
+        <button class="quiet" type="submit" aria-label="Restart {{project .CWD}}" data-busy-label="Restarting…">Restart</button>
       </form>
       {{end}}
     </fieldset>
