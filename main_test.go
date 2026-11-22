@@ -151,6 +151,47 @@ func TestHTTPToCoordinator(t *testing.T) {
 	if w.Header().Get("HX-Trigger") != "" || !strings.Contains(w.Body.String(), "Your edit was not sent") {
 		t.Fatalf("missing stale-edit error: %s", w.Body.String())
 	}
+	for _, check := range []struct{ path, want, absent string }{
+		{"/worker/worker", `id="session-chip"`, ""},
+		{"/worker/worker/feed?session=session", `hx-swap-oob="true"`, ""},
+		{"/worker/worker/controls?tab=session&session=session", "$1.37", ""},
+		{"/worker/worker/controls?tab=session&session=session", `value="Controls work"`, ""},
+		{"/worker/worker/controls?tab=session&session=session", `value="all" selected`, ""},
+		{"/worker/worker/controls?tab=model&session=session", `aria-checked="true">medium`, "xhigh"},
+		{"/worker/worker/controls?tab=model&session=session", "data-scoped-only", ""},
+		{"/worker/worker/controls?tab=sessions&session=session", "Older work", ""},
+		{"/worker/worker/controls?tab=tools&session=session", "Sign-in needed", ""},
+		{"/worker/worker/controls?tab=tools&session=session", "can't report plugins yet", ""},
+		{"/worker/worker/controls?tab=model&session=old", "switched sessions", ""},
+		{"/worker/worker/controls/pick?kind=fork&session=session", "First question", ""},
+		{"/worker/worker/commands", "skill:review", `"help"`},
+		{"/worker/worker/last-reply", "Last reply", ""},
+	} {
+		w := request(http.MethodGet, check.path, true, "", nil)
+		body := w.Body.String()
+		if w.Code != 200 || !strings.Contains(body, check.want) || (check.absent != "" && strings.Contains(body, check.absent)) {
+			t.Fatalf("GET %s: %d, want %q without %q: %.2000s", check.path, w.Code, check.want, check.absent, body)
+		}
+	}
+	controlsPath := "/worker/worker/controls"
+	w = request(http.MethodPost, controlsPath, true, "http://example.com", url.Values{"session": {"session"}, "tab": {"model"}, "action": {"model"}, "value": {"openai-codex/gpt-6-luna"}})
+	if w.Header().Get("HX-Trigger") != "conversationRefresh" || !strings.Contains(w.Body.String(), `data-panel="model"`) {
+		t.Fatalf("model change: %s", w.Body.String())
+	}
+	if raw := string(<-commands); !strings.Contains(raw, `"type":"set_model"`) || !strings.Contains(raw, `"model_spec":"openai-codex/gpt-6-luna"`) {
+		t.Fatalf("unexpected model command: %s", raw)
+	}
+	w = request(http.MethodPost, controlsPath, true, "http://example.com", url.Values{"session": {"session"}, "tab": {"session"}, "action": {"new"}})
+	if w.Header().Get("HX-Redirect") != "/worker/worker" {
+		t.Fatalf("new session should reload the conversation: %v %s", w.Header(), w.Body.String())
+	}
+	if raw := string(<-commands); !strings.Contains(raw, `"type":"new_session"`) {
+		t.Fatalf("unexpected new-session command: %s", raw)
+	}
+	w = request(http.MethodPost, controlsPath, true, "http://example.com", url.Values{"session": {"old"}, "tab": {"session"}, "action": {"new"}})
+	if w.Header().Get("HX-Redirect") != "" || !strings.Contains(w.Body.String(), "switched sessions") || len(commands) != 0 {
+		t.Fatalf("stale session must not start a new one: %s", w.Body.String())
+	}
 	path := "/worker/worker/prompt"
 	long := strings.Repeat("a long prompt ", 4000) // Well past any limit Tau UI used to invent.
 	f := url.Values{"session": {"session"}, "text": {long}, "behavior": {"follow_up"}}
@@ -298,7 +339,7 @@ func fakeRPC(t *testing.T, link *coord.Link, commands chan<- json.RawMessage) {
 			}
 			switch cmd.Type {
 			case "get_snapshot":
-				reply.Result = json.RawMessage(`{"position":{"instance_id":"worker","epoch":"test","offset":4},"instance":{"instance_id":"worker","cwd":"/home/test/project","session_id":"session","pending_inputs":1},"state":{"session_id":"session","is_streaming":true,"queue":{"steering":0,"follow_up":1,"items":[{"id":"queued-1","kind":"follow_up","editable":true,"text":"A pending follow-up"}]}},"history":{"before":"previous","entries":[{"entry_id":"photo","message":{"Role":"user","Content":[{"type":"text","text":"See this mockup"},{"type":"text","text":"<file name=\"mockup.png\">[image content]</file>"},{"type":"image","mimeType":"image/png"}]}},{"entry_id":"current","message":{"Role":"assistant","Content":[{"type":"text","text":"**Bold**\n\n<img src=x>\n\n` + "```" + `sh\necho \"hello\"\n` + "```" + `"}]}}]},"live":{"messages":[{"id":"reply","role":"assistant","text":"Partial reply","truncated":true}],"tools":[{"id":"live-read","name":"read","input":"{\"path\":\"notes.txt\"}","progress":"Reading lines"}]},"ui_requests":[{"id":"id","method":"confirm","title":"Approve changes"}]}`)
+				reply.Result = json.RawMessage(`{"position":{"instance_id":"worker","epoch":"test","offset":4},"instance":{"instance_id":"worker","cwd":"/home/test/project","session_id":"session","pending_inputs":1},"state":{"session_id":"session","model":"anthropic/claude-opus-5-5","thinking_level":"medium","stats":{"model":"anthropic/claude-opus-5-5","thinking_level":"medium","context_used_pct":42,"context_window":200000,"total_tokens":84000},"is_streaming":true,"queue":{"steering":0,"follow_up":1,"items":[{"id":"queued-1","kind":"follow_up","editable":true,"text":"A pending follow-up"}]}},"history":{"before":"previous","entries":[{"entry_id":"photo","message":{"Role":"user","Content":[{"type":"text","text":"See this mockup"},{"type":"text","text":"<file name=\"mockup.png\">[image content]</file>"},{"type":"image","mimeType":"image/png"}]}},{"entry_id":"current","message":{"Role":"assistant","Content":[{"type":"text","text":"**Bold**\n\n<img src=x>\n\n` + "```" + `sh\necho \"hello\"\n` + "```" + `"}]}}]},"live":{"messages":[{"id":"reply","role":"assistant","text":"Partial reply","truncated":true}],"tools":[{"id":"live-read","name":"read","input":"{\"path\":\"notes.txt\"}","progress":"Reading lines"}]},"ui_requests":[{"id":"id","method":"confirm","title":"Approve changes"}]}`)
 			case "get_history":
 				reply.Result = json.RawMessage(`{"entries":[{"entry_id":"previous","message":{"Role":"user","Text":"Older prompt"}},{"entry_id":"call","message":{"Role":"assistant","Text":"Checking filesFinished checking","Content":[{"type":"text","text":"Checking files"},{"type":"toolCall","id":"one","name":"bash","arguments":{"command":"printf example"}},{"type":"text","text":"Finished checking"}]}},{"entry_id":"res","message":{"Role":"toolResult","ToolCallID":"one","Text":"command output"}}]}`)
 			case "get_entry_content":
@@ -337,6 +378,29 @@ func fakeRPC(t *testing.T, link *coord.Link, commands chan<- json.RawMessage) {
 					commands <- f.Command
 					reply.Result = json.RawMessage(`{"type":"response","ok":true}`)
 				}
+			case "get_state":
+				reply.Result = json.RawMessage(`{"type":"response","ok":true,"result":{"session_id":"session","model":"anthropic/claude-opus-5-5","thinking_level":"medium","auto_retry":true,"steering_mode":"one-at-a-time","follow_up_mode":"all","session_name":"Controls work"}}`)
+			case "get_session_stats":
+				reply.Result = json.RawMessage(`{"type":"response","ok":true,"result":{"message_count":48,"total_tokens":84000,"context_window":200000,"context_used_pct":42,"auto_compaction":true,"usage":{"cost":{"input":1.0,"output":0.37}}}}`)
+			case "get_available_models":
+				reply.Result = json.RawMessage(`{"type":"response","ok":true,"result":{"models":[{"id":"claude-opus-5-5","provider":"anthropic","name":"Claude Opus 5.5","context_window":200000,"reasoning":true,"thinking_levels":["off","low","medium","high"]},{"id":"gpt-6-luna","provider":"openai-codex","context_window":400000,"thinking_levels":["off"]}]}}`)
+			case "get_scoped_models":
+				reply.Result = json.RawMessage(`{"type":"response","ok":true,"result":{"patterns":["anthropic/*"],"models":[{"model":"anthropic/claude-opus-5-5"}]}}`)
+			case "list_sessions":
+				reply.Result = json.RawMessage(`{"type":"response","ok":true,"result":{"sessions":[{"id":"older","name":"Older work","last_modified":"2026-11-20T10:00:00Z","message_count":12},{"id":"session","name":"Controls work","last_modified":"2026-11-22T10:00:00Z","message_count":48,"pinned":true}]}}`)
+			case "get_mcp_servers":
+				reply.Result = json.RawMessage(`{"type":"response","ok":true,"result":{"servers":[{"name":"github","status":"connected","tool_count":12},{"name":"linear","status":"needs-auth"}]}}`)
+			case "get_plugins":
+				reply.Result = json.RawMessage(`{"type":"response","ok":false,"error":{"code":"unknown_command","message":"unknown command: get_plugins"}}`)
+			case "get_fork_entries", "get_forget_entries":
+				reply.Result = json.RawMessage(`{"type":"response","ok":true,"result":{"entries":[{"entry_id":"e1","role":"user","text":"First question"}]}}`)
+			case "get_commands":
+				reply.Result = json.RawMessage(`{"type":"response","ok":true,"result":{"commands":[{"name":"help","source":"builtin"},{"name":"skill:review","description":"Review code","source":"skill"}]}}`)
+			case "get_last_assistant_text":
+				reply.Result = json.RawMessage(`{"type":"response","ok":true,"result":{"text":"Last reply"}}`)
+			case "set_model", "set_thinking_level", "new_session":
+				commands <- f.Command
+				reply.Result = json.RawMessage(`{"type":"response","ok":true,"result":{"ok":true}}`)
 			case "send_message":
 				commands <- f.Command
 				reply.Result = json.RawMessage(`{"type":"response","ok":true}`)
@@ -352,5 +416,13 @@ func fakeRPC(t *testing.T, link *coord.Link, commands chan<- json.RawMessage) {
 			t.Error(err)
 			return
 		}
+	}
+}
+
+func TestLinkify(t *testing.T) {
+	got := string(linkify(`Sign in to "linear" at https://auth.example/x?a=1&b=<2>, then paste.`))
+	want := `Sign in to &#34;linear&#34; at <a href="https://auth.example/x?a=1&amp;b=" target="_blank" rel="noopener noreferrer">https://auth.example/x?a=1&amp;b=</a>&lt;2&gt;, then paste.`
+	if got != want {
+		t.Fatalf("linkify:\n got %s\nwant %s", got, want)
 	}
 }

@@ -4,3 +4,5 @@
 /tmp/
 # Editor backups
 *~
+# Built binary
+/tau-ui

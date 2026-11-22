@@ -42,9 +42,16 @@ The phone only talks to Tau UI. Tau UI calls the daemon's local Unix socket. A n
 - Send a prompt, queue a follow-up, interrupt a run, or answer a pending input request. In the message box, press **Control+Enter** (**Command+Enter** on macOS) to send. **Enter** inserts a newline. When Tau is working, **Send** steers the current turn and **Follow up** queues a later message.
 - Open **Queued messages** above the composer to see waiting follow-ups and steering messages. Select **Edit** to change a pending message’s text without moving it in the queue or changing its attachments. If Tau takes the message before you save, it rejects the edit without sending it again. Older Tau workers report counts only; rebuild Tau and replace those workers to enable editing.
 - Select **Attach files** or paste a screenshot into the composer. To take a file out before sending, select **Remove** next to its name. Tau UI hands each file to Tau through a temporary file on the host, so only Tau's own rules apply to attachments. Message text must fit Tau's 1 MiB message limit; attach longer text as a file. Clipboard image paste depends on the browser.
+- Change the session from the conversation. The chip at the top right shows the model, thinking level, and how full the context is. Select the chip, or **⋯** next to **Send**, to open the controls:
+  - **Session**: context, cost, and message count; rename the session; auto-compaction, auto-retry, and how queued messages are delivered; compact the history, retry the last run, copy the last reply, export the session as HTML, fork or forget from a message, reload plugins, or start a new session.
+  - **Model**: thinking level and the model, with search and your scoped models.
+  - **History**: resume, pin, or unpin a saved session.
+  - **Tools**: turn MCP servers and plugins on or off, reconnect a server, or sign in to one. A sign-in link appears in the conversation as an input request.
+
+  Type **/** in the message box to pick a command. Built-in commands open the matching control; skill, prompt, and plugin commands from Tau are added to the message so you can type their arguments. Session settings apply to the current session and reset when you start or resume another. Some controls need a Tau build that reports them; older workers show a note instead.
 - Resume updates after a dropped connection. The conversation refreshes about once a second while visible. When a message, command, or output is too long for a refresh, Tau UI shows a preview. Select **Show full content** to load the rest into that message. The app keeps unsent text in the current browser tab and clears the composer only after Tau acknowledges the send. It doesn't automatically retry sends.
 
-Tau UI sees coordinator-managed instances, not standalone Tau processes. You can't browse and launch arbitrary saved sessions from the web UI. HTMX 2.0.10 is [vendored with its license](web/htmx.LICENSE).
+Tau UI sees coordinator-managed instances, not standalone Tau processes. To resume a saved session, use **History** in the controls of an instance in the same project. HTMX 2.0.10 is [vendored with its license](web/htmx.LICENSE).
 
 ## Run checks
 

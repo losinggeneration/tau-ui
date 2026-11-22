@@ -39,6 +39,7 @@
         <div class="workspace-title"><p class="eyebrow">Conversation</p><h1>{{project .CWD}}</h1>
           {{if .CWD}}<p class="instance-path" title="{{.CWD}}">{{.CWD}}</p>{{end}}
         </div>
+        {{template "session-chip" .Feed}}
       </header>
       <p id="feed-notice" class="notice error" role="status"></p>
       <div class="feed" id="scroll-feed" tabindex="0" aria-label="Conversation transcript">
@@ -59,8 +60,9 @@
         </details>
         <form id="prompt-form" class="mutation" method="post" enctype="multipart/form-data" hx-encoding="multipart/form-data" action="/worker/{{.ID}}/prompt" hx-post="/worker/{{.ID}}/prompt" hx-target="#notice" hx-disabled-elt="find .primary, find .follow, find .attachment-controls">
           <input type="hidden" name="session" value="{{.Session}}">
+          <ul id="palette" class="command-palette" role="listbox" aria-label="Commands" hidden></ul>
           <label for="prompt" class="sr-only">Message Tau</label>
-          <textarea id="prompt" class="prompt" name="text" rows="2" placeholder="What are we working on?"></textarea>
+          <textarea id="prompt" class="prompt" name="text" rows="2" placeholder="Message Tau, or type / for commands" aria-controls="palette" aria-autocomplete="list" data-commands="/worker/{{.ID}}/commands"></textarea>
           <fieldset class="attachment-controls" aria-label="Attachments">
             <label class="attachment-picker">
               <input id="attachments" class="sr-only" name="attachment" type="file" multiple>
@@ -70,6 +72,7 @@
             <p id="attachment-status" class="notice error" role="status"></p>
           </fieldset>
           <div class="composer-actions">
+            <button type="button" class="quiet more-button" data-open="session" aria-label="Session controls" title="Session controls">⋯</button>
             <button type="button" class="quiet mutation" hx-post="/worker/{{.ID}}/interrupt" hx-target="#notice" hx-include="#prompt-form [name=session]" hx-disabled-elt="this" id="interrupt" disabled>Interrupt</button>
             <button type="submit" class="quiet follow" name="behavior" value="follow_up" disabled>Follow up</button>
             <button type="submit" id="send" class="primary" name="behavior" value="steer" aria-keyshortcuts="Control+Enter Meta+Enter" title="Send (Ctrl+Enter or Command+Enter)" disabled>Send <span aria-hidden="true">↑</span></button>
@@ -77,6 +80,20 @@
         </form>
         <div id="notice" class="notice" role="status"></div>
       </div>
+      <dialog id="controls" class="controls-sheet" aria-labelledby="controls-title" data-base="/worker/{{.ID}}/controls?session={{.Session}}">
+        <div class="sheet-grip" aria-hidden="true"></div>
+        <header class="sheet-header">
+          <h2 id="controls-title">Session controls</h2>
+          <button type="button" class="quiet" data-close>Done</button>
+        </header>
+        <nav class="sheet-tabs" role="tablist" aria-label="Control sections">
+          <button type="button" role="tab" data-tab="session" aria-selected="true">Session</button>
+          <button type="button" role="tab" data-tab="model" aria-selected="false">Model</button>
+          <button type="button" role="tab" data-tab="sessions" aria-selected="false">History</button>
+          <button type="button" role="tab" data-tab="tools" aria-selected="false">Tools</button>
+        </nav>
+        <div class="sheet-body" id="controls-body" role="tabpanel" aria-live="polite"><p class="hint">Loading…</p></div>
+      </dialog>
       <dialog id="queue-editor" aria-labelledby="queue-editor-title">
         <form id="queue-edit-form" method="post" hx-post="/worker/{{.ID}}/queue/edit" hx-target="#queue-edit-notice" hx-disabled-elt="find fieldset" class="mutation">
           <h2 id="queue-editor-title">Edit queued message</h2>
@@ -137,6 +154,7 @@
 {{end}}
 
 {{define "feed"}}
+{{if .OOB}}{{template "session-chip" .}}{{end}}
 <div class="feed-state" data-session="{{.Session}}" data-ready="{{and (ne .Session "") (not .Error) (not .Changed)}}" data-running="{{.Busy}}" data-queue-count="{{.Queue.Total}}">
 <template id="queue-update">{{template "queue-items" .Queue}}</template>
 {{if .Error}}
@@ -149,7 +167,7 @@
     {{range .Requests}}
     {{$requestID := requestID $.Session .ID}}
     <article class="request" id="{{$requestID}}" hx-preserve>
-      <h3>{{.Title}}</h3>{{if .Message}}<p>{{.Message}}</p>{{end}}
+      <h3>{{linkify .Title}}</h3>{{if .Message}}<p>{{linkify .Message}}</p>{{end}}
       <form class="mutation" method="post" action="/worker/{{$.ID}}/answer" hx-post="/worker/{{$.ID}}/answer" hx-target="#notice" hx-disabled-elt="find fieldset">
         <input type="hidden" name="request" value="{{.ID}}">
         <input type="hidden" name="method" value="{{.Method}}">
@@ -263,3 +281,202 @@
 
 {{define "notice"}}<span class="{{if .Error}}error{{else}}success{{end}}">{{.Text}}</span>{{end}}
 
+
+{{define "session-chip"}}
+<button type="button" id="session-chip" class="session-chip" data-open="model" aria-label="Model and session controls" {{if .OOB}}hx-swap-oob="true"{{end}} {{if not .Model}}hidden{{end}}>
+  <span class="chip-model">{{.ModelShort}}</span>
+  {{if and .Thinking (ne .Thinking "off")}}<span class="chip-thinking"><span class="chip-sep" aria-hidden="true">·</span> {{.Thinking}}</span>{{end}}
+  <span class="context-meter" data-level="{{.ContextLevel}}" title="Context {{printf "%.0f" .ContextPct}}% used"><span data-used="{{printf "%.0f" .ContextPct}}"></span></span>
+</button>
+{{end}}
+
+{{define "controls-body"}}
+{{if .Error}}<p class="notice error" role="status">{{.Error}}</p>{{end}}
+{{if .Notice}}<p class="notice success" role="status">{{.Notice}}</p>{{end}}
+{{if .Pick}}{{template "controls-pick" .}}
+{{else if eq .Tab "model"}}{{template "controls-model" .}}
+{{else if eq .Tab "sessions"}}{{template "controls-sessions" .}}
+{{else if eq .Tab "tools"}}{{template "controls-tools" .}}
+{{else}}{{template "controls-session" .}}{{end}}
+{{end}}
+
+{{define "control-hidden"}}<input type="hidden" name="session" value="{{.Session}}"><input type="hidden" name="tab" value="{{.Tab}}">{{end}}
+
+{{define "controls-session"}}
+<div data-panel="session">
+{{with .Stats}}
+<div class="stat-grid">
+  <div><span class="stat-label">Context</span><span class="stat-value">{{$.ContextText}}</span>
+    <span class="context-meter wide" aria-hidden="true"><span data-used="{{printf "%.0f" .ContextUsedPct}}"></span></span></div>
+  <div><span class="stat-label">Cost</span><span class="stat-value">{{$.Cost}}</span></div>
+  <div><span class="stat-label">Messages</span><span class="stat-value">{{.MessageCount}}</span></div>
+</div>
+{{end}}
+
+<h3 class="group-title">Name</h3>
+<form class="inline-form" hx-post="/worker/{{.ID}}/controls" hx-target="#controls-body" hx-disabled-elt="find button">
+  {{template "control-hidden" .}}<input type="hidden" name="action" value="name">
+  <input name="value" aria-label="Session name" placeholder="Name this session" value="{{.State.Name}}" autocomplete="off">
+  <button class="quiet">Save</button>
+</form>
+
+<h3 class="group-title">Behavior</h3>
+{{if .Stats}}
+<form hx-post="/worker/{{.ID}}/controls" hx-target="#controls-body" hx-trigger="change">
+  {{template "control-hidden" .}}<input type="hidden" name="action" value="auto_compaction">
+  <label class="toggle-row"><span><span class="row-title">Auto-compact</span><span class="row-hint">Compact when the context is nearly full</span></span><input type="checkbox" class="switch" name="enabled" {{if .Stats.AutoCompaction}}checked{{end}}></label>
+</form>
+{{end}}
+{{if .State.RetryKnown}}
+<form hx-post="/worker/{{.ID}}/controls" hx-target="#controls-body" hx-trigger="change">
+  {{template "control-hidden" .}}<input type="hidden" name="action" value="auto_retry">
+  <label class="toggle-row"><span><span class="row-title">Auto-retry</span><span class="row-hint">Retry failed model requests</span></span><input type="checkbox" class="switch" name="enabled" {{if .State.RetryOn}}checked{{end}}></label>
+</form>
+{{end}}
+{{template "queue-mode" (queueMode . "steering_mode" "Steering messages" "How queued steering is delivered" .State.SteeringMode)}}
+{{template "queue-mode" (queueMode . "follow_up_mode" "Follow-ups" "How queued follow-ups are delivered" .State.FollowUpMode)}}
+<p class="hint">These settings apply to this session and reset when you start or resume another.</p>
+
+<h3 class="group-title">Actions</h3>
+<details class="compact-form">
+  <summary class="button">Compact history</summary>
+  <form hx-post="/worker/{{.ID}}/controls" hx-target="#controls-body" hx-disabled-elt="find button">
+    {{template "control-hidden" .}}<input type="hidden" name="action" value="compact">
+    <label for="compact-notes">Instructions for the summary (optional)</label>
+    <textarea id="compact-notes" name="value" rows="2"></textarea>
+    <button class="primary">Compact now</button>
+  </form>
+</details>
+<div class="action-grid">
+  {{template "control-button" (controlButton . "retry" "" "Retry last run" "")}}
+  <button type="button" data-copy-reply="/worker/{{.ID}}/last-reply">Copy last reply</button>
+  <a class="button" href="/worker/{{.ID}}/export" download>Export HTML</a>
+  <button type="button" hx-get="/worker/{{.ID}}/controls/pick?kind=fork&amp;session={{.Session}}" hx-target="#controls-body">Fork from…</button>
+  <button type="button" hx-get="/worker/{{.ID}}/controls/pick?kind=forget&amp;session={{.Session}}" hx-target="#controls-body">Forget from…</button>
+  {{template "control-button" (controlButton . "reload" "" "Reload plugins" "")}}
+  {{template "control-button" (controlButton . "new" "" "New session" "Start a new session? This one stays in History.")}}
+</div>
+</div>
+{{end}}
+
+{{define "queue-mode"}}
+{{if .Value}}
+<form hx-post="/worker/{{.View.ID}}/controls" hx-target="#controls-body" hx-trigger="change">
+  {{template "control-hidden" .View}}<input type="hidden" name="action" value="{{.Action}}">
+  <label class="select-row"><span><span class="row-title">{{.Title}}</span><span class="row-hint">{{.Hint}}</span></span>
+    <select name="value"><option value="one-at-a-time" {{if eq .Value "one-at-a-time"}}selected{{end}}>One at a time</option><option value="all" {{if eq .Value "all"}}selected{{end}}>All at once</option></select></label>
+</form>
+{{end}}
+{{end}}
+
+{{define "control-button"}}
+<form hx-post="/worker/{{.View.ID}}/controls" hx-target="#controls-body" hx-disabled-elt="find button" {{if .Confirm}}hx-confirm="{{.Confirm}}"{{end}}>
+  {{template "control-hidden" .View}}<input type="hidden" name="action" value="{{.Action}}"><input type="hidden" name="value" value="{{.Value}}">
+  <button class="{{.Class}}">{{.Label}}</button>
+</form>
+{{end}}
+
+{{define "controls-model"}}
+<div data-panel="model">
+<h3 class="group-title" id="thinking-label">Thinking level</h3>
+{{if .NoThinking}}<p class="hint">This model doesn't support thinking levels.</p>
+{{else}}
+<form class="segmented" role="radiogroup" aria-labelledby="thinking-label" hx-post="/worker/{{.ID}}/controls" hx-target="#controls-body">
+  {{template "control-hidden" .}}<input type="hidden" name="action" value="thinking">
+  {{range .Levels}}<button name="value" value="{{.}}" role="radio" aria-checked="{{eq . $.State.ThinkingLevel}}">{{.}}</button>{{end}}
+</form>
+{{end}}
+<h3 class="group-title">Model</h3>
+<input type="search" class="search" data-filter-list="#model-list" placeholder="Search models" aria-label="Search models">
+{{if .HasScope}}
+<div class="chip-filter" role="group" aria-label="Filter">
+  <button type="button" class="filter" aria-pressed="true" data-scope="scoped">Scoped</button>
+  <button type="button" class="filter" aria-pressed="false" data-scope="all">All</button>
+</div>
+{{end}}
+<form id="model-list" class="option-list" role="radiogroup" aria-label="Models" hx-post="/worker/{{.ID}}/controls" hx-target="#controls-body" {{if .HasScope}}data-scoped-only{{end}}>
+  {{template "control-hidden" .}}<input type="hidden" name="action" value="model">
+  {{range .Models}}
+  <button class="option" name="value" value="{{.Key}}" role="radio" aria-checked="{{eq .Key $.State.Model}}" {{if .Scoped}}data-scoped{{end}}>
+    <span><span class="row-title">{{or .Name .ID}}</span><span class="row-hint">{{.Provider}}{{if .ContextWindow}} · {{tokens .ContextWindow}} context{{end}}{{if .Reasoning}} · reasoning{{end}}</span></span>
+    <span class="check" aria-hidden="true"></span>
+  </button>
+  {{else}}<p class="hint">Tau reported no available models.</p>{{end}}
+</form>
+</div>
+{{end}}
+
+{{define "controls-sessions"}}
+<div data-panel="sessions">
+<input type="search" class="search" data-filter-list="#session-list" placeholder="Search saved sessions" aria-label="Search saved sessions">
+<ul id="session-list" class="card-list">
+  {{range .Sessions}}
+  <li class="session-row">
+    <details>
+      <summary><span><span class="row-title">{{if .Pinned}}📌 {{end}}{{or .Name "Untitled session"}}</span><span class="row-hint">{{.When}} · {{.MessageCount}} messages{{if eq .ID $.State.SessionID}} · current{{end}}</span></span><span class="chevron" aria-hidden="true"></span></summary>
+      <div class="session-actions">
+        {{if ne .ID $.State.SessionID}}{{template "control-button" (controlButton $ "resume" .ID "Resume" "Switch this instance to that session? Your draft stays here.")}}{{end}}
+        {{if .Pinned}}{{template "control-button" (controlButton $ "unpin" .ID "Unpin" "")}}{{else}}{{template "control-button" (controlButton $ "pin" .ID "Pin" "")}}{{end}}
+      </div>
+    </details>
+  </li>
+  {{else}}<p class="hint">No saved sessions.</p>{{end}}
+</ul>
+</div>
+{{end}}
+
+{{define "controls-tools"}}
+<div data-panel="tools">
+<h3 class="group-title">MCP servers</h3>
+{{if .MCPMissing}}<p class="hint">This Tau worker can't report MCP servers yet. Update Tau and restart the instance.</p>
+{{else}}
+<ul class="card-list">
+  {{range .MCP}}
+  <li class="card-row">
+    <span><span class="row-title">{{.Name}}</span><span class="row-hint">{{mcpStatus .Status}}{{if .ToolCount}} · {{.ToolCount}} tools{{end}}{{if .Error}} · {{.Error}}{{end}}</span></span>
+    <span class="card-actions">
+      {{if eq .Status "needs-auth"}}{{template "control-button" (controlButton $ "mcp_sign_in" .Name "Sign in" "")}}{{end}}
+      {{if eq .Status "failed" "closed"}}{{template "control-button" (controlButton $ "mcp_reconnect" .Name "Reconnect" "")}}{{end}}
+      <form hx-post="/worker/{{$.ID}}/controls" hx-target="#controls-body" hx-trigger="change">
+        {{template "control-hidden" $}}<input type="hidden" name="action" value="mcp_toggle"><input type="hidden" name="value" value="{{.Name}}">
+        <input type="checkbox" class="switch" name="enabled" aria-label="Enable {{.Name}}" {{if ne .Status "disabled"}}checked{{end}}>
+      </form>
+    </span>
+  </li>
+  {{else}}<p class="hint">No MCP servers are configured.</p>{{end}}
+</ul>
+{{end}}
+<h3 class="group-title">Plugins</h3>
+{{if .PluginsMissing}}<p class="hint">This Tau worker can't report plugins yet. Update Tau and restart the instance.</p>
+{{else}}
+<ul class="card-list">
+  {{range .Plugins}}
+  <li class="card-row">
+    <span><span class="row-title">{{.Name}}</span><span class="row-hint">{{if .Loaded}}Loaded{{else if .Enabled}}Enabled, not loaded{{else}}Disabled{{end}}</span></span>
+    <form hx-post="/worker/{{$.ID}}/controls" hx-target="#controls-body" hx-trigger="change">
+      {{template "control-hidden" $}}<input type="hidden" name="action" value="plugin_toggle"><input type="hidden" name="value" value="{{.Name}}">
+      <input type="checkbox" class="switch" name="enabled" aria-label="Enable {{.Name}}" {{if .Enabled}}checked{{end}}>
+    </form>
+  </li>
+  {{else}}<p class="hint">No plugins are installed.</p>{{end}}
+</ul>
+<p class="hint">Plugin changes apply to this session.</p>
+{{end}}
+</div>
+{{end}}
+
+{{define "controls-pick"}}
+<div data-panel="session">
+<button type="button" class="quiet back-link" hx-get="/worker/{{.ID}}/controls?tab=session&amp;session={{.Session}}" hx-target="#controls-body">‹ Back</button>
+<h3 class="group-title">{{if eq .Pick "fork"}}Fork from a message{{else}}Forget from a message{{end}}</h3>
+<p class="hint">{{if eq .Pick "fork"}}Start a new session that branches at the message you choose.{{else}}Remove the message you choose and everything after it from this session.{{end}}</p>
+<ul class="card-list">
+  {{range .Entries}}
+  <li class="card-row pick-row">
+    <span><span class="row-title">{{if eq .Role "user"}}You{{else if eq .Role "assistant"}}Tau{{else}}Summary{{end}}</span><span class="row-hint pick-text">{{.Text}}</span></span>
+    {{template "control-button" (controlButton $ $.Pick .EntryID (pickLabel $.Pick) (pickConfirm $.Pick))}}
+  </li>
+  {{else}}<p class="hint">There are no messages to choose from.</p>{{end}}
+</ul>
+</div>
+{{end}}

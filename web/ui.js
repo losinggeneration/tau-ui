@@ -87,6 +87,7 @@ function saveDraft() {
 
 promptBox?.addEventListener("input", saveDraft);
 promptBox?.addEventListener("keydown", event => {
+  if (paletteKey(event)) return;
   if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey) ||
       event.shiftKey || event.altKey || event.isComposing) return;
   event.preventDefault();
@@ -321,5 +322,201 @@ document.body.addEventListener("htmx:afterSettle", event => {
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && feed) htmx.trigger(document.body, "conversationRefresh");
 });
+
+// ---------- Session controls ----------
+
+const controls = document.querySelector("#controls");
+const controlsBody = document.querySelector("#controls-body");
+const palette = document.querySelector("#palette");
+
+// Meter fills are set here because the content policy blocks inline styles.
+function applyMeters() {
+  for (const bar of document.querySelectorAll("[data-used]")) {
+    bar.style.inlineSize = `${Math.min(100, Math.max(0, Number(bar.dataset.used) || 0))}%`;
+  }
+}
+
+function controlsURL(tab) {
+  const session = composer?.elements.session.value ?? "";
+  return `${location.pathname}/controls?tab=${tab}&session=${encodeURIComponent(session)}`;
+}
+
+function selectTab(tab) {
+  for (const t of controls.querySelectorAll("[role=tab]")) t.setAttribute("aria-selected", String(t.dataset.tab === tab));
+}
+
+function openControls(tab, request) {
+  if (!controls) return;
+  selectTab(tab);
+  controlsBody.innerHTML = '<p class="hint">Loading…</p>';
+  if (request) request();
+  else htmx.ajax("GET", controlsURL(tab), { target: controlsBody });
+  if (!controls.open) controls.showModal();
+}
+
+// Runs a panel action from the command menu and shows its result in the panel.
+function controlAction(tab, action, value = "") {
+  const session = composer.elements.session.value;
+  openControls(tab, () => htmx.ajax("POST", `${location.pathname}/controls`, {
+    target: controlsBody, values: { action, value, session, tab },
+  }));
+}
+
+function applyModelFilter() {
+  const list = controlsBody?.querySelector("#model-list");
+  if (!list) return;
+  const query = controlsBody.querySelector('[data-filter-list="#model-list"]')?.value.trim().toLowerCase() ?? "";
+  const scopedOnly = list.hasAttribute("data-scoped-only");
+  for (const option of list.querySelectorAll(".option")) {
+    const inScope = !scopedOnly || option.hasAttribute("data-scoped") || option.getAttribute("aria-checked") === "true";
+    option.hidden = !inScope || !option.textContent.toLowerCase().includes(query);
+  }
+}
+
+document.addEventListener("click", event => {
+  const open = event.target.closest?.("[data-open]");
+  if (open) openControls(open.dataset.open);
+  if (!controls?.contains(event.target)) return;
+  if (event.target === controls || event.target.closest("[data-close]")) controls.close();
+  const tab = event.target.closest("[role=tab]");
+  if (tab) openControls(tab.dataset.tab);
+  const scope = event.target.closest("[data-scope]");
+  if (scope) {
+    for (const b of controlsBody.querySelectorAll("[data-scope]")) b.setAttribute("aria-pressed", String(b === scope));
+    controlsBody.querySelector("#model-list").toggleAttribute("data-scoped-only", scope.dataset.scope === "scoped");
+    applyModelFilter();
+  }
+  const copy = event.target.closest("[data-copy-reply]");
+  if (copy) copyLastReply(copy);
+});
+
+controls?.addEventListener("input", event => {
+  const selector = event.target.dataset.filterList;
+  if (!selector) return;
+  if (selector === "#model-list") return applyModelFilter();
+  const query = event.target.value.trim().toLowerCase();
+  for (const row of controlsBody.querySelectorAll(`${selector} > li`)) {
+    row.hidden = !row.textContent.toLowerCase().includes(query);
+  }
+});
+
+async function copyLastReply(button) {
+  const label = button.textContent;
+  try {
+    const response = await fetch(button.dataset.copyReply);
+    if (!response.ok) throw new Error(await response.text());
+    const text = await response.text();
+    if (!text) throw new Error("There is no reply yet.");
+    await navigator.clipboard.writeText(text);
+    button.textContent = "Copied";
+  } catch {
+    button.textContent = "Couldn't copy";
+  }
+  setTimeout(() => { button.textContent = label; }, 2000);
+}
+
+document.body.addEventListener("htmx:afterSettle", event => {
+  applyMeters();
+  if (event.detail.target === controlsBody) applyModelFilter();
+});
+document.body.addEventListener("htmx:oobAfterSwap", applyMeters);
+
+// ---------- Command menu ----------
+
+// Built-in commands map to the controls panel. Skill, prompt, and plugin
+// commands from Tau are typed into the message box so you can add arguments.
+const builtinCommands = [
+  { name: "model", description: "Switch the active model", run: () => openControls("model") },
+  { name: "thinking", description: "Set the thinking level", run: () => openControls("model") },
+  { name: "compact", description: "Compact session history", run: () => openControls("session") },
+  { name: "retry", description: "Resume an interrupted or failed run", run: () => controlAction("session", "retry") },
+  { name: "new", description: "Start a new session", run: () => { if (confirm("Start a new session? This one stays in History.")) controlAction("session", "new"); } },
+  { name: "resume", description: "Resume a saved session", run: () => openControls("sessions") },
+  { name: "fork", description: "Fork from a message", run: () => openControls("session", () => htmx.ajax("GET", `${location.pathname}/controls/pick?kind=fork&session=${encodeURIComponent(composer.elements.session.value)}`, { target: controlsBody })) },
+  { name: "forget", description: "Drop messages from a picked point onward", run: () => openControls("session", () => htmx.ajax("GET", `${location.pathname}/controls/pick?kind=forget&session=${encodeURIComponent(composer.elements.session.value)}`, { target: controlsBody })) },
+  { name: "name", description: "Name this session", run: () => openControls("session") },
+  { name: "copy", description: "Copy the last reply", run: () => { const b = document.createElement("button"); b.dataset.copyReply = `${location.pathname}/last-reply`; copyLastReply(b).then(() => { document.querySelector("#notice").textContent = b.textContent === "Copied" ? "Copied the last reply." : "Couldn't copy the last reply."; }); } },
+  { name: "export", description: "Download the session as HTML", run: () => { location.href = `${location.pathname}/export`; } },
+  { name: "reload", description: "Reload plugins and resources", run: () => controlAction("session", "reload") },
+  { name: "mcp", description: "Manage MCP servers", run: () => openControls("tools") },
+  { name: "plugins", description: "Enable or disable plugins", run: () => openControls("tools") },
+  { name: "settings", description: "Open session controls", run: () => openControls("session") },
+];
+let extraCommands;
+let paletteMatches = [];
+let paletteActive = 0;
+
+async function loadCommands() {
+  if (extraCommands) return;
+  extraCommands = [];
+  try {
+    const response = await fetch(promptBox.dataset.commands);
+    if (!response.ok) return;
+    const names = new Set(builtinCommands.map(c => c.name));
+    extraCommands = (await response.json()).filter(c => !names.has(c.name)).map(c => ({
+      name: c.name, description: c.description,
+      run: () => { promptBox.value = `/${c.name} `; promptBox.focus(); saveDraft(); },
+    }));
+  } catch { /* The built-in commands still work. */ }
+}
+
+function updatePalette() {
+  if (!palette) return;
+  const match = /^\/(\S*)$/.exec(promptBox.value);
+  if (!match) { palette.hidden = true; return; }
+  loadCommands().then(() => { if (!palette.hidden || paletteMatches.length === 0) renderPalette(match[1]); });
+  renderPalette(match[1]);
+}
+
+function renderPalette(prefix) {
+  const query = prefix.toLowerCase();
+  paletteMatches = [...builtinCommands, ...(extraCommands ?? [])].filter(c => c.name.toLowerCase().startsWith(query));
+  paletteActive = Math.min(paletteActive, Math.max(paletteMatches.length - 1, 0));
+  palette.replaceChildren(...paletteMatches.map((command, i) => {
+    const item = document.createElement("li");
+    item.role = "option";
+    item.setAttribute("aria-selected", String(i === paletteActive));
+    const name = document.createElement("span");
+    name.className = "cmd-name";
+    name.textContent = `/${command.name}`;
+    const hint = document.createElement("span");
+    hint.className = "row-hint";
+    hint.textContent = command.description ?? "";
+    item.append(name, hint);
+    // Keep focus in the message box, but run only on a tap so dragging scrolls the list.
+    item.addEventListener("mousedown", event => event.preventDefault());
+    item.addEventListener("click", () => runCommand(command));
+    return item;
+  }));
+  palette.hidden = paletteMatches.length === 0;
+}
+
+function runCommand(command) {
+  promptBox.value = "";
+  saveDraft();
+  palette.hidden = true;
+  command.run();
+}
+
+promptBox?.addEventListener("input", () => { paletteActive = 0; updatePalette(); });
+// paletteKey handles navigation while the command menu is open.
+function paletteKey(event) {
+  if (!palette || palette.hidden || event.isComposing) return false;
+  const count = paletteMatches.length;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    paletteActive = (paletteActive + (event.key === "ArrowDown" ? 1 : count - 1)) % count;
+    renderPalette(promptBox.value.slice(1));
+  } else if ((event.key === "Enter" && !event.ctrlKey && !event.metaKey) || event.key === "Tab") {
+    event.preventDefault();
+    runCommand(paletteMatches[paletteActive]);
+  } else if (event.key === "Escape") {
+    palette.hidden = true;
+  } else {
+    return false;
+  }
+  return true;
+}
+if (controls) applyMeters();
 syncComposer();
 bottom();

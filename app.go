@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -154,6 +155,32 @@ type feedView struct {
 	Requests                   []dialog
 	Queue                      queueView
 	Busy, Changed              bool
+	// Header chip: model, thinking level, and context use.
+	Model, Thinking string
+	ContextPct      float64
+	// OOB swaps the header chip in from a feed poll.
+	OOB bool
+}
+
+// ModelShort drops the provider for the header chip.
+func (v feedView) ModelShort() string {
+	_, name, ok := strings.Cut(v.Model, "/")
+	if !ok {
+		return v.Model
+	}
+	return name
+}
+
+// ContextLevel colors the context meter.
+func (v feedView) ContextLevel() string {
+	switch {
+	case v.ContextPct > 80:
+		return "high"
+	case v.ContextPct > 60:
+		return "mid"
+	default:
+		return "low"
+	}
 }
 
 func snapshot(ctx context.Context, c *client.CoordinatedClient, id, expected string) (feedView, error) {
@@ -169,6 +196,14 @@ func snapshot(ctx context.Context, c *client.CoordinatedClient, id, expected str
 	}
 	v.Session, v.Before = s.State.SessionID, s.History.Before
 	v.Busy = s.State.IsStreaming
+	if len(s.State.Model) > 0 {
+		// Older workers may send the model as an object; the chip then uses stats.
+		_ = json.Unmarshal(s.State.Model, &v.Model)
+	}
+	v.Thinking = s.State.ThinkingLevel
+	if st := s.State.Stats; st != nil {
+		v.Model, v.Thinking, v.ContextPct = cmp.Or(st.Model, v.Model), cmp.Or(st.ThinkingLevel, v.Thinking), st.ContextUsedPct
+	}
 	if len(s.State.Queue) > 0 {
 		if err := json.Unmarshal(s.State.Queue, &v.Queue); err != nil {
 			return v, fmt.Errorf("read Tau queue: %w", err)
@@ -202,6 +237,7 @@ func (a app) feed(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	v.OOB = true
 	render(w, "feed", v)
 }
 

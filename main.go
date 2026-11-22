@@ -23,7 +23,7 @@ import (
 //go:embed web/*
 var web embed.FS
 
-var pages = template.Must(template.New("ui.html").Funcs(template.FuncMap{
+var pages = template.Must(template.New("ui.html").Funcs(controlFuncs).Funcs(template.FuncMap{
 	"project": projectName,
 	"requestID": func(session, id string) string {
 		return "request-" + base64.RawURLEncoding.EncodeToString([]byte(session+"\x00"+id))
@@ -132,6 +132,12 @@ func newApp(socket, password string) http.Handler {
 	mux.HandleFunc("POST /worker/{id}/queue/edit", a.editQueue)
 	mux.HandleFunc("POST /worker/{id}/interrupt", a.interrupt)
 	mux.HandleFunc("POST /worker/{id}/answer", a.answer)
+	mux.HandleFunc("GET /worker/{id}/controls", a.controls)
+	mux.HandleFunc("GET /worker/{id}/controls/pick", a.controlsPick)
+	mux.HandleFunc("POST /worker/{id}/controls", a.controlAction)
+	mux.HandleFunc("GET /worker/{id}/export", a.exportHTML)
+	mux.HandleFunc("GET /worker/{id}/last-reply", a.lastReply)
+	mux.HandleFunc("GET /worker/{id}/commands", a.commands)
 	mux.HandleFunc("POST /start", a.start)
 	for _, asset := range []string{"htmx.min.js", "style.css", "ui.js"} {
 		mux.HandleFunc("GET /"+asset, func(w http.ResponseWriter, r *http.Request) {
