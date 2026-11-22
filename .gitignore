@@ -1,0 +1,6 @@
+# Local TLS certificates and private keys
+/tls/
+# Air build output
+/tmp/
+# Editor backups
+*~

@@ -1,0 +1,265 @@
+{{define "page"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"historyEnabled":false}'>
+  <title>{{if .ID}}{{project .CWD}} · {{end}}Tau UI</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/code.css">
+  <script src="/htmx.min.js" defer></script>
+  <script src="/ui.js" defer></script>
+</head>
+<body class="{{if .ID}}page-conversation{{else}}page-instances{{end}}">
+  <header class="app-header">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">τ</span><strong>Tau UI</strong></a>
+    <span class="header-status">Instance workspace</span>
+  </header>
+  <div class="layout">
+    <aside class="sidebar" aria-label="Instances">
+      <div class="sidebar-heading"><p class="eyebrow">Workspace</p><h1>Instances</h1></div>
+      <div id="lifecycle-notice" class="notice" role="status"></div>
+      <div id="instance-list" class="instance-list" hx-get="/instances?active={{.ID}}" hx-trigger="every 5s, instanceListRefresh from:body" hx-sync="this:abort">
+        {{template "instances" .Registry}}
+      </div>
+      <details class="start-panel">
+        <summary>Start an instance</summary>
+        <form method="post" action="/start" hx-post="/start" hx-target="#start-notice" hx-disabled-elt="find button" class="mutation">
+          <label for="directory">Project directory on the Tau host</label>
+          <input id="directory" name="cwd" placeholder="/home/you/project" required maxlength="4096" autocapitalize="off" spellcheck="false">
+          <button type="submit" class="primary">Start instance</button>
+          <div id="start-notice" class="notice" role="status"></div>
+        </form>
+      </details>
+    </aside>
+    {{if .ID}}
+    <main class="workspace">
+      <header class="workspace-header">
+        <a class="back button quiet" href="/">Instances</a>
+        <div class="workspace-title"><p class="eyebrow">Conversation</p><h1>{{project .CWD}}</h1>
+          {{if .CWD}}<p class="instance-path" title="{{.CWD}}">{{.CWD}}</p>{{end}}
+        </div>
+      </header>
+      <p id="feed-notice" class="notice error" role="status"></p>
+      <div class="feed" id="scroll-feed" tabindex="0" aria-label="Conversation transcript">
+        <div class="conversation">
+          <div id="archive">
+          {{if and .Before .Session}}{{template "history" (historyLink .ID .Session .Before)}}{{end}}
+            <div class="messages" id="recent"></div>
+          </div>
+          <div id="feed" hx-get="/worker/{{.ID}}/feed?session={{.Session}}" hx-trigger="every 1s, conversationRefresh from:body">
+            {{template "feed" .Feed}}
+          </div>
+        </div>
+      </div>
+      <div class="composer">
+        <details id="queue-panel" class="queue-panel" {{if not .Feed.Queue.Total}}hidden{{end}}>
+          <summary>Queued messages <span id="queue-count" class="badge">{{.Feed.Queue.Total}}</span></summary>
+          <div id="queue-items">{{template "queue-items" .Feed.Queue}}</div>
+        </details>
+        <form id="prompt-form" class="mutation" method="post" enctype="multipart/form-data" hx-encoding="multipart/form-data" action="/worker/{{.ID}}/prompt" hx-post="/worker/{{.ID}}/prompt" hx-target="#notice" hx-disabled-elt="find .primary, find .follow, find .attachment-controls">
+          <input type="hidden" name="session" value="{{.Session}}">
+          <label for="prompt" class="sr-only">Message Tau</label>
+          <textarea id="prompt" class="prompt" name="text" rows="2" placeholder="What are we working on?"></textarea>
+          <fieldset class="attachment-controls" aria-label="Attachments">
+            <label class="attachment-picker">
+              <input id="attachments" class="sr-only" name="attachment" type="file" multiple>
+              <span class="button quiet"><span class="attach-label">Attach files</span></span>
+            </label>
+            <ul id="attachment-list" class="attachment-list" aria-label="Files to send"></ul>
+            <p id="attachment-status" class="notice error" role="status"></p>
+          </fieldset>
+          <div class="composer-actions">
+            <button type="button" class="quiet mutation" hx-post="/worker/{{.ID}}/interrupt" hx-target="#notice" hx-include="#prompt-form [name=session]" hx-disabled-elt="this" id="interrupt" disabled>Interrupt</button>
+            <button type="submit" class="quiet follow" name="behavior" value="follow_up" disabled>Follow up</button>
+            <button type="submit" id="send" class="primary" name="behavior" value="steer" aria-keyshortcuts="Control+Enter Meta+Enter" title="Send (Ctrl+Enter or Command+Enter)" disabled>Send <span aria-hidden="true">↑</span></button>
+          </div>
+        </form>
+        <div id="notice" class="notice" role="status"></div>
+      </div>
+      <dialog id="queue-editor" aria-labelledby="queue-editor-title">
+        <form id="queue-edit-form" method="post" hx-post="/worker/{{.ID}}/queue/edit" hx-target="#queue-edit-notice" hx-disabled-elt="find fieldset" class="mutation">
+          <h2 id="queue-editor-title">Edit queued message</h2>
+          <fieldset>
+            <input type="hidden" name="session" value="{{.Session}}">
+            <input type="hidden" name="id">
+            <label for="queue-text">Message text</label>
+            <textarea id="queue-text" name="text" rows="5" required autofocus></textarea>
+            <div class="composer-actions">
+              <button type="button" class="quiet" id="queue-cancel">Cancel</button>
+              <button type="submit" class="primary">Save changes</button>
+            </div>
+          </fieldset>
+          <div id="queue-edit-notice" class="notice" role="status"></div>
+        </form>
+      </dialog>
+    </main>
+    {{else}}
+    <main class="workspace"><div class="empty-state">
+      <p class="eyebrow">Tau workspace</p><h2>Your conversations</h2>
+      <p>Open an instance to see its status, read the conversation, or send a prompt.</p>
+    </div></main>
+    {{end}}
+  </div>
+</body>
+</html>{{end}}
+
+{{define "instances"}}
+{{if .Error}}<p class="notice error" role="status">{{.Error}}</p>{{else}}
+  {{range .Items}}
+  <div class="instance-card">
+    <a href="/worker/{{.ID}}" class="instance" {{if eq .ID $.Active}}aria-current="page"{{end}}>
+      <div class="instance-main"><span class="instance-name">{{project .CWD}}</span><span class="badge" data-state="{{.Badge}}">{{.Label}}</span></div>
+      <span class="instance-path" title="{{.CWD}}">{{.CWD}}</span>
+      {{if .FirstPrompt}}<span class="preview">{{.FirstPrompt}}</span>{{end}}
+    </a>
+    {{if and .SessionID (ne .Badge "offline")}}
+    <fieldset class="instance-actions" aria-label="Actions for {{project .CWD}}" hx-sync="#instance-list:drop" hx-target="#lifecycle-notice" hx-disabled-elt="closest fieldset">
+      <form method="post" hx-post="/worker/{{.ID}}/lifecycle" hx-confirm="Stop {{project .CWD}}?">
+        <input type="hidden" name="session" value="{{.SessionID}}">
+        <input type="hidden" name="active" value="{{$.Active}}">
+        <input type="hidden" name="op" value="stop">
+        <button class="quiet" type="submit" aria-label="Stop {{project .CWD}}">Stop</button>
+      </form>
+      {{if $.Restart}}
+      <form method="post" hx-post="/worker/{{.ID}}/lifecycle" hx-confirm="Restart {{project .CWD}} using the same session?">
+        <input type="hidden" name="session" value="{{.SessionID}}">
+        <input type="hidden" name="active" value="{{$.Active}}">
+        <input type="hidden" name="op" value="restart">
+        <button class="quiet" type="submit" aria-label="Restart {{project .CWD}}">Restart</button>
+      </form>
+      {{end}}
+    </fieldset>
+    {{end}}
+  </div>
+  {{else}}<p class="hint">No running instances. Start one in a project directory.</p>{{end}}
+{{end}}
+{{end}}
+
+{{define "feed"}}
+<div class="feed-state" data-session="{{.Session}}" data-ready="{{and (ne .Session "") (not .Error) (not .Changed)}}" data-running="{{.Busy}}" data-queue-count="{{.Queue.Total}}">
+<template id="queue-update">{{template "queue-items" .Queue}}</template>
+{{if .Error}}
+  <p class="notice error" role="status">{{.Error}} Retrying automatically.</p>
+{{else if .Changed}}
+  <p class="notice error" role="status">This instance switched sessions. Your draft is still on this page. <a href="/worker/{{.ID}}">Open the active session</a>.</p>
+{{else}}
+  {{if .Requests}}
+  <section class="requests" aria-label="Input requests">
+    {{range .Requests}}
+    {{$requestID := requestID $.Session .ID}}
+    <article class="request" id="{{$requestID}}" hx-preserve>
+      <h3>{{.Title}}</h3>{{if .Message}}<p>{{.Message}}</p>{{end}}
+      <form class="mutation" method="post" action="/worker/{{$.ID}}/answer" hx-post="/worker/{{$.ID}}/answer" hx-target="#notice" hx-disabled-elt="find fieldset">
+        <input type="hidden" name="request" value="{{.ID}}">
+        <input type="hidden" name="method" value="{{.Method}}">
+        <fieldset class="actions" aria-label="Answer request">
+          {{if eq .Method "confirm"}}
+          <button class="primary" name="action" value="approve">Approve</button><button name="action" value="reject">Reject</button>
+          {{else if eq .Method "select"}}
+            {{range .Options}}<button name="value" value="{{.}}">{{.}}</button>{{end}}
+          {{else if eq .Method "input"}}
+            <input id="{{$requestID}}-input" name="value" aria-label="Response to {{.Title}}" placeholder="{{.Placeholder}}"><button class="primary" name="action" value="answer">Respond</button>
+          {{end}}
+          <button class="quiet" name="action" value="cancel">Dismiss</button>
+        </fieldset>
+      </form>
+    </article>
+    {{end}}
+  </section>
+  {{end}}
+  <div class="messages" id="latest">
+    {{range .Messages}}{{template "message" .}}{{else}}{{if not .Busy}}<p class="hint">No messages yet. Send the first prompt below.</p>{{end}}{{end}}
+    {{if .Busy}}<p class="hint streaming">Tau is working</p>{{end}}
+  </div>
+{{end}}
+</div>
+{{end}}
+
+{{define "queue-items"}}
+{{if .Items}}
+<ul>
+  {{range .Items}}
+  <li>
+    <div><p class="eyebrow">{{if eq .Kind "steer"}}Steering{{else}}Follow-up{{end}}</p><p class="queue-preview">{{or .Text "Message with no text"}}</p></div>
+    {{if .Editable}}<button type="button" class="quiet" data-queue-edit="{{.ID}}">Edit</button>{{end}}
+    <template class="queue-text">{{.Text}}</template>
+  </li>
+  {{end}}
+</ul>
+{{end}}
+{{if gt .Total (len .Items)}}<p class="queue-limits">{{if ne .Items nil}}Only part of the queue fits here.{{else}}Waiting: {{.FollowUp}} follow-up, {{.Steering}} steering. Update Tau to view and edit the messages.{{end}}</p>{{end}}
+{{end}}
+
+{{define "message"}}
+{{if .Run}}
+<article class="execution" data-entry="{{.ID}}" {{if .Live}}data-live{{end}} {{if .Run.ResultOnly}}data-result-only{{end}}>
+  {{with .Run}}
+  <details>
+    <summary>
+      <strong>{{or .Narration .Name "Tool"}}</strong>
+      <span class="execution-status" data-status="{{.Status}}">{{.Status}}</span>
+    </summary>
+    <div class="execution-body">
+      {{if .Narration}}<div class="rendered-markdown" hx-disable>{{markdown .Narration}}</div>{{end}}
+      {{if and .Narration .Name}}<p class="eyebrow">{{.Name}}</p>{{end}}
+      <div class="execution-input" {{if .InputFull}}data-full="{{.InputFull}}"{{end}}>
+        {{template "execution-input" .}}
+        {{if .InputFull}}{{template "show-full" .InputFull}}{{end}}
+      </div>
+      <div class="execution-output" {{if .OutputFull}}data-full="{{.OutputFull}}"{{end}}>
+        {{if .Output}}<p class="eyebrow">{{if eq .Status "Running"}}Progress{{else}}Output{{end}}</p><pre><code>{{.Output}}</code></pre>
+        {{else if eq .Status "Running"}}<p class="hint">Waiting for output…</p>
+        {{else if not .Status}}<p class="hint">No result available.</p>
+        {{else if not .OutputFull}}<p class="hint">No output recorded.</p>{{end}}
+        {{if .OutputFull}}{{template "show-full" .OutputFull}}{{end}}
+      </div>
+    </div>
+  </details>
+  {{end}}
+</article>
+{{else}}
+<article class="message{{if .Live}} live-message{{end}}" data-role="{{.Role}}" data-entry="{{.ID}}" {{if .Live}}data-live{{end}}>
+  <div class="message-label">{{if eq .Role "user"}}You{{else if eq .Role "assistant"}}Tau{{else}}Session{{end}}{{if .Live}} · live{{end}}</div>
+  <div class="message-content" {{if .Full}}data-full="{{.Full}}"{{end}}>
+    {{template "message-content" .}}
+    {{if .Full}}{{template "show-full" .Full}}{{end}}
+  </div>
+</article>
+{{end}}
+{{end}}
+
+{{define "execution-input"}}
+{{if .Command}}<p class="eyebrow">Command</p><pre><code>{{.Command}}</code></pre>{{end}}
+{{if .Arguments}}<dl>{{range .Arguments}}<dt>{{.Label}}</dt><dd>{{.Value}}</dd>{{end}}</dl>{{end}}
+{{end}}
+
+{{define "message-content"}}
+{{if .Text}}<div class="message-text rendered-markdown" hx-disable>{{markdown .Text}}</div>{{end}}
+{{range .Images}}<img class="message-image" id="{{requestID "image" .URL}}" hx-preserve src="{{.URL}}" alt="{{.Alt}}" loading="lazy" decoding="async">{{end}}
+{{end}}
+
+{{define "show-full"}}
+<button type="button" class="quiet show-full" hx-get="{{.}}" hx-target="closest [data-full]" hx-disabled-elt="this" hx-sync="#feed:replace">Show full content</button>
+<span class="full-notice notice error" role="status"></span>
+{{end}}
+
+{{define "content-expanded"}}<div data-expanded>
+{{template "message-content" .Message}}
+{{if .Run}}{{template "execution-input" .Run}}{{end}}
+{{if .IsOutput}}<p class="eyebrow">Output</p><pre><code>{{.Output}}</code></pre>{{end}}
+{{if .Limited}}<p class="hint">This is the content Tau still has available.</p>{{end}}
+</div>{{end}}
+
+{{define "content-error"}}<span data-content-error>{{.}}</span>{{end}}
+
+{{define "history"}}
+{{if .Before}}<div class="history-control">
+  <button type="button" class="button quiet" hx-get="/worker/{{.ID}}/history?session={{.Session}}&amp;before={{.Before}}" hx-target="closest .history-control" hx-swap="outerHTML" hx-disabled-elt="this">Load older messages</button>
+  {{if .Error}}<p class="notice error" role="status">{{.Error}}</p>{{end}}
+</div>{{end}}
+{{if .Messages}}<div class="messages">{{range .Messages}}{{template "message" .}}{{end}}</div>{{end}}
+{{end}}
+
+{{define "notice"}}<span class="{{if .Error}}error{{else}}success{{end}}">{{.Text}}</span>{{end}}
+
