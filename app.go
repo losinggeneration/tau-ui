@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
+	"math"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -23,7 +26,9 @@ import (
 )
 
 type app struct {
-	socket string
+	socket      string
+	inbox       *inboxOrder
+	projectRoot string
 }
 
 var errDial = errors.New("Can't reach Tau. Check that the daemon is running.")
@@ -49,45 +54,133 @@ func (a app) rpc(r *http.Request, timeout time.Duration, fn func(context.Context
 
 type instance struct {
 	coord.Instance
-	Label, Badge string
+	Label, Badge, Limit        string
+	Active, Restart, Dismissed bool
+}
+
+// Running reports whether a restart could interrupt a run. An unknown state
+// counts because nothing says the worker is idle.
+func (i instance) Running() bool {
+	return i.Badge == "unknown" || i.Instance.Active()
+}
+
+// Updatable reports whether the card can offer a restart onto the current build.
+func (i instance) Updatable() bool {
+	return i.Outdated && i.Restart && i.SessionID != "" && i.Badge != "offline"
+}
+
+var stateBadges = map[string]string{
+	coord.StateAwaitingUser: "ready",
+	coord.StateWorking:      "busy",
+	coord.StateNeedsInput:   "waiting",
+	coord.StateUsageLimited: "limited",
+	coord.StateRetrying:     "retrying",
+	coord.StatePaused:       "paused",
+	coord.StateError:        "error",
 }
 
 func summary(i coord.Instance) instance {
-	out := instance{Instance: i, Label: "Ready", Badge: "ready"}
+	out := instance{Instance: i, Label: i.StatusText(), Badge: stateBadges[i.State], Limit: limitKey(i)}
 	switch {
 	case i.LinkState == coord.LinkExited:
-		out.Label, out.Badge = "Exited", "offline"
+		out.Label, out.Badge = "exited", "offline"
 	case i.LinkState != "" && i.LinkState != coord.LinkConnected:
-		out.Label, out.Badge = "Disconnected", "offline"
+		out.Label, out.Badge = "disconnected", "offline"
 	case i.PendingInputs > 0:
-		out.Label, out.Badge = "Needs input", "waiting"
-	case i.State == coord.StateBusy:
-		out.Label, out.Badge = "Running", "busy"
+		out.Badge = "waiting"
+	case out.Badge == "":
+		out.Label, out.Badge = "unknown", "unknown"
+		if i.State != "" {
+			out.Label += ": " + i.State
+		}
 	}
 	return out
 }
 
-type registry struct {
-	Active, Error string
-	Items         []instance
-	Restart       bool
+type instanceGroup struct {
+	Key, Title        string
+	Collapsible, Open bool
+	Items             []instance
 }
 
-func loadRegistry(ctx context.Context, c *client.CoordinatedClient, active string) (registry, error) {
-	v := registry{Active: active, Restart: restartSupported(c)}
-	items, err := c.ListInstances(ctx)
-	for _, i := range items {
-		v.Items = append(v.Items, summary(i))
+type registry struct {
+	Error   string
+	Groups  []instanceGroup
+	Current instance
+}
+
+// NoneRunning reports whether only exited workers, or none at all, are listed.
+func (v registry) NoneRunning() bool {
+	return !slices.ContainsFunc(v.Groups, func(g instanceGroup) bool { return g.Key != "done" })
+}
+
+// groupInstances returns the sidebar groups in display order, without empty ones.
+func groupInstances(items []instance) []instanceGroup {
+	const (
+		attention = iota
+		input
+		working
+		waiting
+		disconnected
+		done
+	)
+	groups := [...]instanceGroup{
+		attention:    {Key: "attention", Title: "Needs attention"},
+		input:        {Key: "input", Title: "Needs input"},
+		working:      {Key: "working", Title: "Working", Collapsible: true, Open: true},
+		waiting:      {Key: "waiting", Title: "Waiting", Collapsible: true, Open: true},
+		disconnected: {Key: "disconnected", Title: "Disconnected"},
+		done:         {Key: "done", Title: "Done", Collapsible: true},
 	}
-	slices.SortStableFunc(v.Items, func(a, b instance) int { return b.LastActivity.Compare(a.LastActivity) })
-	return v, err
+	for _, i := range items {
+		at := input
+		switch {
+		case i.LinkState == coord.LinkExited:
+			at = done
+		case i.Badge == "offline":
+			at = disconnected
+		case i.Badge == "error", i.Badge == "unknown", i.Badge == "limited" && !i.Dismissed:
+			at = attention
+		case i.Badge == "limited", i.Badge == "paused":
+			at = waiting
+		case i.Badge == "busy", i.Badge == "retrying":
+			at = working
+		}
+		groups[at].Items = append(groups[at].Items, i)
+	}
+	return slices.DeleteFunc(groups[:], func(g instanceGroup) bool { return len(g.Items) == 0 })
+}
+
+func (a app) loadRegistry(ctx context.Context, c *client.CoordinatedClient, active string) (registry, error) {
+	var v registry
+	restart := restartSupported(c)
+	items, err := c.ListInstances(ctx)
+	if err != nil {
+		return v, err
+	}
+	sortTimes := a.inbox.sortTimes(c.Generation(), items)
+	slices.SortFunc(items, func(a, b coord.Instance) int {
+		return cmp.Or(sortTimes[b.ID].Compare(sortTimes[a.ID]), strings.Compare(a.ID, b.ID))
+	})
+	dismissed := a.inbox.dismissedLimits(items)
+	cards := make([]instance, 0, len(items))
+	for _, item := range items {
+		i := summary(item)
+		i.Active, i.Restart, i.Dismissed = i.ID == active, restart, dismissed[i.ID]
+		if i.Active {
+			v.Current = i
+		}
+		cards = append(cards, i)
+	}
+	v.Groups = groupInstances(cards)
+	return v, nil
 }
 
 func (a app) instances(w http.ResponseWriter, r *http.Request) {
 	active := r.URL.Query().Get("active")
-	v := registry{Active: active}
+	var v registry
 	err := a.rpc(r, 4*time.Second, func(ctx context.Context, c *client.CoordinatedClient) (err error) {
-		v, err = loadRegistry(ctx, c, active)
+		v, err = a.loadRegistry(ctx, c, active)
 		return err
 	})
 	if err != nil {
@@ -106,7 +199,7 @@ type pageView struct {
 func (a app) page(w http.ResponseWriter, r *http.Request) {
 	v := pageView{ID: r.PathValue("id")}
 	err := a.rpc(r, 6*time.Second, func(ctx context.Context, c *client.CoordinatedClient) error {
-		list, err := loadRegistry(ctx, c, v.ID)
+		list, err := a.loadRegistry(ctx, c, v.ID)
 		v.Registry = list
 		if err != nil {
 			return err
@@ -114,12 +207,7 @@ func (a app) page(w http.ResponseWriter, r *http.Request) {
 		if v.ID == "" {
 			return nil
 		}
-		for _, inst := range list.Items {
-			if inst.ID == v.ID {
-				v.CWD, v.Session = inst.CWD, inst.SessionID
-				break
-			}
-		}
+		v.CWD, v.Session = list.Current.CWD, list.Current.SessionID
 		f, err := snapshot(ctx, c, v.ID, "")
 		if err != nil {
 			v.Feed.Error = err.Error()
@@ -141,12 +229,27 @@ type dialog struct {
 }
 
 type queueView struct {
-	Steering int                `json:"steering"`
-	FollowUp int                `json:"follow_up"`
-	Items    []sdk.QueuedPrompt `json:"items"`
+	Steering       int                `json:"steering"`
+	FollowUp       int                `json:"follow_up"`
+	SteeringPaused bool               `json:"steering_paused"`
+	FollowUpPaused bool               `json:"follow_up_paused"`
+	Items          []sdk.QueuedPrompt `json:"items"`
 }
 
 func (q queueView) Total() int { return q.Steering + q.FollowUp }
+
+func (q queueView) Paused() bool { return q.SteeringPaused || q.FollowUpPaused }
+
+// EditableCount decides whether the panel offers Edit all.
+func (q queueView) EditableCount() int {
+	n := 0
+	for _, item := range q.Items {
+		if item.Editable {
+			n++
+		}
+	}
+	return n
+}
 
 type feedView struct {
 	ID, Session, Before, Error string
@@ -155,6 +258,7 @@ type feedView struct {
 	Requests                   []dialog
 	Queue                      queueView
 	Busy, Changed              bool
+	UsageWait                  *usageLimitWait
 	// Header chip: model, thinking level, and context use.
 	Model, Thinking string
 	ContextPct      float64
@@ -215,6 +319,7 @@ func snapshot(ctx context.Context, c *client.CoordinatedClient, id, expected str
 			return v, fmt.Errorf("read Tau live activity: %w", err)
 		}
 	}
+	v.UsageWait = live.UsageLimitWait
 	v.Messages = (contentSource{id, v.Session}).transcript(s.History.Entries, live)
 	for _, raw := range s.UIRequests {
 		var d dialog
@@ -304,13 +409,16 @@ type notice struct {
 func result(w http.ResponseWriter, good string, err error) {
 	v := notice{Text: good}
 	if err != nil {
-		v.Error = true
-		v.Text = err.Error()
-		if errors.Is(err, client.ErrOutcomeUnknown) {
-			v.Text = "Tau may have received this. Check the conversation or instance list before trying again. Nothing was resent."
-		}
+		v = failure(err)
 	}
 	render(w, "notice", v)
+}
+
+func failure(err error) notice {
+	if errors.Is(err, client.ErrOutcomeUnknown) {
+		return notice{Text: "Tau may have received this. Check the conversation or instance list before trying again. Nothing was resent.", Error: true}
+	}
+	return notice{Text: err.Error(), Error: true}
 }
 
 func (a app) command(r *http.Request, name string, args any, guardSession string) error {
@@ -336,9 +444,19 @@ func workerCommand(ctx context.Context, c *client.CoordinatedClient, id, name st
 		return reply, err
 	}
 	if reply.Error != nil && reply.Error.Message != "" {
-		return nil, errors.New(reply.Error.Message)
+		return nil, tauError{reply.Error.Code, reply.Error.Message}
 	}
 	return nil, errors.New("Tau refused the request.")
+}
+
+// tauError keeps a worker's error code for callers that handle it specially.
+type tauError struct{ Code, Message string }
+
+func (e tauError) Error() string { return e.Message }
+
+func hasTauCode(err error, code string) bool {
+	e, ok := errors.AsType[tauError](err)
+	return ok && e.Code == code
 }
 
 func (a app) prompt(w http.ResponseWriter, r *http.Request) {
@@ -401,22 +519,211 @@ func (a app) prompt(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// queueKinds is in delivery order. Resuming steering first stops an idle
+// session from running follow-ups ahead of it.
+var queueKinds = []string{"steer", "follow_up"}
+
+type queueEditRow struct {
+	sdk.QueuedPrompt
+	Note string
+}
+
+// queueEditor is the edit dialog. Resume names only the queues this dialog
+// paused, so closing it can't release a pause someone else set.
+type queueEditor struct {
+	Worker, Session      string
+	Resume               []string
+	Rows                 []queueEditRow
+	Partial, CannotPause bool
+	Notice               notice
+}
+
+func (v queueEditor) CanSave() bool {
+	return slices.ContainsFunc(v.Rows, func(row queueEditRow) bool { return row.Editable })
+}
+
+func queueState(ctx context.Context, c *client.CoordinatedClient, id, session string) (queueView, error) {
+	var q queueView
+	s, err := c.SnapshotPreview(ctx, id)
+	if err != nil {
+		return q, err
+	}
+	if s.State.SessionID != session {
+		return q, errors.New("This instance switched sessions. Open the active session first.")
+	}
+	if len(s.State.Queue) > 0 {
+		if err := json.Unmarshal(s.State.Queue, &q); err != nil {
+			return q, fmt.Errorf("read Tau queue: %w", err)
+		}
+	}
+	return q, nil
+}
+
+func resumeQueues(ctx context.Context, c *client.CoordinatedClient, id, session string, queues []string) error {
+	for _, kind := range queueKinds {
+		if !slices.Contains(queues, kind) {
+			continue
+		}
+		args := map[string]string{"expected_session_id": session, "queue": kind}
+		if _, err := workerCommand(ctx, c, id, "resume_queue", args); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pauseQueue holds both queues and opens the editor on one message, or on
+// every message when no id is given.
+func (a app) pauseQueue(w http.ResponseWriter, r *http.Request) {
+	if !form(w, r) {
+		return
+	}
+	worker, session, only := r.PathValue("id"), r.PostForm.Get("session"), r.PostForm.Get("id")
+	v := queueEditor{Worker: worker, Session: session}
+	err := a.rpc(r, 20*time.Second, func(ctx context.Context, c *client.CoordinatedClient) error {
+		q, err := queueState(ctx, c, worker, session)
+		if err != nil {
+			return err
+		}
+		for _, kind := range queueKinds {
+			if kind == "steer" && q.SteeringPaused || kind == "follow_up" && q.FollowUpPaused {
+				continue
+			}
+			args := map[string]string{"expected_session_id": session, "queue": kind}
+			if _, err := workerCommand(ctx, c, worker, "pause_queue", args); hasTauCode(err, "unknown_command") {
+				v.CannotPause = true
+				break
+			} else if err != nil {
+				return errors.Join(err, resumeQueues(ctx, c, worker, session, v.Resume))
+			}
+			v.Resume = append(v.Resume, kind)
+		}
+		// Read again now that nothing can leave: the click may have raced delivery.
+		if q, err = queueState(ctx, c, worker, session); err != nil {
+			return errors.Join(err, resumeQueues(ctx, c, worker, session, v.Resume))
+		}
+		for _, item := range q.Items {
+			if only != "" && item.ID != only {
+				continue
+			}
+			row := queueEditRow{QueuedPrompt: item}
+			if !item.Editable {
+				row.Note = "This message can't be edited here."
+			}
+			v.Rows = append(v.Rows, row)
+		}
+		v.Partial = only == "" && q.Total() > len(q.Items)
+		if !v.CanSave() {
+			return errors.Join(errors.New("That message has left the queue or can't be edited here."), resumeQueues(ctx, c, worker, session, v.Resume))
+		}
+		return nil
+	})
+	if err != nil {
+		w.Header().Set("HX-Retarget", "#notice")
+		result(w, "", err)
+		return
+	}
+	w.Header().Set("HX-Trigger-After-Settle", "queueEditOpen")
+	render(w, "queue-editor", v)
+}
+
+// resumeQueue resumes the named queues, or every paused queue when none is named.
+func (a app) resumeQueue(w http.ResponseWriter, r *http.Request) {
+	if !form(w, r) {
+		return
+	}
+	worker, session, queues := r.PathValue("id"), r.PostForm.Get("session"), r.PostForm["queue"]
+	err := a.rpc(r, 20*time.Second, func(ctx context.Context, c *client.CoordinatedClient) error {
+		if len(queues) == 0 {
+			q, err := queueState(ctx, c, worker, session)
+			if err != nil {
+				return err
+			}
+			if q.SteeringPaused {
+				queues = append(queues, "steer")
+			}
+			if q.FollowUpPaused {
+				queues = append(queues, "follow_up")
+			}
+		}
+		return resumeQueues(ctx, c, worker, session, queues)
+	})
+	result(w, "Queue resumed.", err)
+}
+
+// editQueue saves the dialog and resumes what it paused. Tau replaces a
+// message's ID on each edit, so after a partial failure the dialog keeps only
+// the unsaved rows; a retry can't target an ID that's already gone.
 func (a app) editQueue(w http.ResponseWriter, r *http.Request) {
 	if !form(w, r) {
 		return
 	}
-	session, id, text := r.PostForm.Get("session"), r.PostForm.Get("id"), r.PostForm.Get("text")
-	if session == "" || id == "" || strings.TrimSpace(text) == "" {
+	worker, session, ids, texts := r.PathValue("id"), r.PostForm.Get("session"), r.PostForm["id"], r.PostForm["text"]
+	blank := func(s string) bool { return strings.TrimSpace(s) == "" }
+	if session == "" || len(ids) == 0 || len(ids) != len(texts) || slices.ContainsFunc(ids, blank) || slices.ContainsFunc(texts, blank) {
+		w.Header().Set("HX-Retarget", "#queue-edit-notice")
 		result(w, "", errors.New("Choose a queued message and enter its new text."))
 		return
 	}
-	args := map[string]string{"expected_session_id": session, "id": id, "text": text}
-	err := a.command(r, "edit_queued_text", args, "")
-	if err != nil {
-		result(w, "", err)
+	lf := strings.NewReplacer("\r\n", "\n")
+	v := queueEditor{Worker: worker, Session: session, Resume: r.PostForm["resume"]}
+	for i, id := range ids {
+		v.Rows = append(v.Rows, queueEditRow{QueuedPrompt: sdk.QueuedPrompt{ID: id, Text: lf.Replace(texts[i]), Editable: true}})
+	}
+	const staleNote = "This message changed or left the queue. Copy your text if you still need it."
+	saved := 0
+	err := a.rpc(r, 20*time.Second, func(ctx context.Context, c *client.CoordinatedClient) error {
+		q, err := queueState(ctx, c, worker, session)
+		if err != nil {
+			return err
+		}
+		current := make(map[string]sdk.QueuedPrompt, len(q.Items))
+		for _, item := range q.Items {
+			current[item.ID] = item
+		}
+		stale := false
+		for i := range v.Rows {
+			row := &v.Rows[i]
+			item, ok := current[row.ID]
+			row.Kind = item.Kind
+			if !ok || !item.Editable {
+				row.Editable, row.Note, stale = false, staleNote, true
+			}
+		}
+		if stale {
+			return errors.New("A message left the queue or changed. Your edit was not sent.")
+		}
+		for len(v.Rows) > 0 {
+			row := &v.Rows[0]
+			if row.Text != lf.Replace(current[row.ID].Text) {
+				args := map[string]string{"expected_session_id": session, "id": row.ID, "text": row.Text}
+				if _, err := workerCommand(ctx, c, worker, "edit_queued_text", args); err != nil {
+					if hasTauCode(err, "queue_changed") || errors.Is(err, client.ErrOutcomeUnknown) {
+						row.Editable, row.Note = false, staleNote
+					}
+					return err
+				}
+				saved++
+			}
+			v.Rows = v.Rows[1:]
+		}
+		return resumeQueues(ctx, c, worker, session, v.Resume)
+	})
+	if err != nil && len(v.Rows) > 0 {
+		v.Notice = failure(err)
+		if saved > 0 {
+			v.Notice.Text = fmt.Sprintf("Saved %d. %s", saved, v.Notice.Text)
+		}
+		render(w, "queue-editor", v)
 		return
 	}
 	w.Header().Set("HX-Trigger", "queueEditSaved")
+	if err != nil {
+		log.Printf("resume queue after edit: %v", err)
+		w.Header().Set("HX-Retarget", "#notice")
+		render(w, "notice", notice{Text: "Your edits were saved, but Tau didn't confirm the queue resumed. Select Resume if it still shows as paused.", Error: true})
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -455,12 +762,211 @@ func (a app) answer(w http.ResponseWriter, r *http.Request) {
 	result(w, "Response sent.", a.command(r, "ui_response", args, ""))
 }
 
+const (
+	maxProjectPath     = 4096
+	projectSearchLimit = 1000
+	// Search the most recently changed top-level folders first.
+	projectSearchRecent = 10
+	// Levels below each top-level folder searched before going deeper anywhere.
+	projectSearchEarlyDepth = 3
+)
+
+type projectSearchDir struct {
+	path    string
+	level   int // 0 for a direct child of the search folder.
+	modTime time.Time
+}
+
+type projectDir struct {
+	Name, Relative string
+}
+
+// projectDirOptions are the picker's advanced search settings.
+type projectDirOptions struct {
+	Hidden bool // Browse and search dot-folders.
+	Deps   bool // Search dependency and build folders.
+}
+
+type projectDirsView struct {
+	projectDirOptions
+	Path, Parent, Dir, Query, Error string
+	Dirs                            []projectDir
+	Limited, Incomplete             bool
+	InHidden                        bool // The current folder is inside a dot-folder.
+}
+
+// Search skips these unless asked. Browsing still lists them.
+var projectDepDirs = []string{"node_modules", "target", "vendor"}
+
+func (o projectDirOptions) browsable(name string) bool {
+	return (o.Hidden || !strings.HasPrefix(name, ".")) && !strings.ContainsAny(name, "\x00\r\n")
+}
+
+func (a app) projectDirs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	opts := projectDirOptions{Hidden: q.Get("hidden") == "1", Deps: q.Get("deps") == "1"}
+	v, err := a.readProjectDirs(r.Context(), cmp.Or(q.Get("dir"), "."), strings.TrimSpace(q.Get("q")), opts)
+	if err != nil {
+		v.Dirs = nil
+		v.Error = "Can't browse this folder. Choose a different folder or enter the project path manually."
+	}
+	render(w, "project-dirs", v)
+}
+
+// Folder navigation uses paths relative to the configured browse root.
+func (a app) readProjectDirs(ctx context.Context, dir, query string, opts projectDirOptions) (projectDirsView, error) {
+	v := projectDirsView{projectDirOptions: opts, Dir: dir, Query: query}
+	local, err := filepath.Localize(dir)
+	if err != nil {
+		return v, fmt.Errorf("invalid project folder: %w", err)
+	}
+	full := filepath.Join(a.projectRoot, local)
+	if len(full) > maxProjectPath {
+		return v, errors.New("project path is too long")
+	}
+	if dir != "." {
+		for name := range strings.SplitSeq(dir, "/") {
+			if !opts.browsable(name) {
+				return v, errors.New("project folder hidden or unsupported")
+			}
+			v.InHidden = v.InHidden || strings.HasPrefix(name, ".")
+		}
+		v.Parent = filepath.ToSlash(filepath.Dir(local))
+	}
+	root, err := os.OpenRoot(a.projectRoot)
+	if err != nil {
+		return v, fmt.Errorf("open project browse root: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	folder, err := root.OpenRoot(local)
+	if err != nil {
+		return v, fmt.Errorf("open project folder: %w", err)
+	}
+	defer func() { _ = folder.Close() }()
+	if query != "" {
+		if err := v.search(ctx, folder, full); err != nil {
+			return v, fmt.Errorf("search project folders: %w", err)
+		}
+		v.Path = full
+		return v, nil
+	}
+	entries, err := fs.ReadDir(folder.FS(), ".")
+	if err != nil {
+		return v, fmt.Errorf("list project folders: %w", err)
+	}
+	v.Path = full
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() && opts.validChild(full, name) {
+			rel := filepath.ToSlash(filepath.Join(local, name))
+			v.Dirs = append(v.Dirs, projectDir{Name: name, Relative: rel})
+		}
+	}
+	return v, nil
+}
+
+func (o projectDirOptions) validChild(parent, name string) bool {
+	return o.browsable(name) && fs.ValidPath(name) && len(filepath.Join(parent, name)) <= maxProjectPath
+}
+
+func (v *projectDirsView) search(ctx context.Context, folder *os.Root, full string) error {
+	remaining := projectSearchLimit
+	query := strings.ToLower(v.Query)
+	// Read one folder, recording its matches and returning its visible children.
+	scan := func(parent string, level int) ([]projectSearchDir, error) {
+		dir, err := folder.OpenRoot(parent)
+		if err != nil {
+			return nil, fmt.Errorf("open search folder: %w", err)
+		}
+		defer func() { _ = dir.Close() }()
+		f, err := dir.Open(".")
+		if err != nil {
+			return nil, fmt.Errorf("open search listing: %w", err)
+		}
+		defer func() { _ = f.Close() }()
+		base := filepath.Join(full, parent)
+		var children []projectSearchDir
+		// Read incrementally so no directory is scanned past the shared budget.
+		for remaining > 0 {
+			if err := ctx.Err(); err != nil {
+				return children, err
+			}
+			entries, err := f.ReadDir(1)
+			if errors.Is(err, io.EOF) {
+				return children, nil
+			}
+			if err != nil {
+				return children, fmt.Errorf("read search listing: %w", err)
+			}
+			entry := entries[0]
+			name := entry.Name()
+			if !entry.IsDir() || !v.validChild(base, name) || !v.Deps && slices.Contains(projectDepDirs, name) {
+				continue
+			}
+			remaining--
+			rel := filepath.Join(parent, name)
+			child := projectSearchDir{path: rel, level: level}
+			if parent == "." {
+				// A folder removed mid-search sorts last and fails its own scan.
+				if info, err := entry.Info(); err == nil {
+					child.modTime = info.ModTime()
+				}
+			}
+			children = append(children, child)
+			if strings.Contains(strings.ToLower(name), query) {
+				v.Dirs = append(v.Dirs, projectDir{
+					Name: filepath.ToSlash(rel), Relative: filepath.ToSlash(filepath.Join(v.Dir, rel)),
+				})
+			}
+		}
+		return children, nil
+	}
+	top, err := scan(".", 0)
+	if err != nil {
+		return err
+	}
+	slices.SortFunc(top, func(a, b projectSearchDir) int {
+		return cmp.Or(b.modTime.Compare(a.modTime), strings.Compare(a.path, b.path))
+	})
+	// Walk breadth-first, deferring anything at maxLevel or below to the last pass.
+	var deferred []projectSearchDir
+	walk := func(queue []projectSearchDir, maxLevel int) {
+		for len(queue) > 0 && remaining > 0 && ctx.Err() == nil {
+			next := queue[0]
+			queue = queue[1:]
+			children, err := scan(next.path, next.level+1)
+			if err != nil {
+				v.Incomplete = true
+			}
+			for _, child := range children {
+				if child.level < maxLevel {
+					queue = append(queue, child)
+				} else {
+					deferred = append(deferred, child)
+				}
+			}
+		}
+	}
+	recent := min(projectSearchRecent, len(top))
+	walk(top[:recent:recent], projectSearchEarlyDepth)
+	walk(top[recent:], projectSearchEarlyDepth)
+	pending := deferred
+	deferred = nil
+	walk(pending, math.MaxInt)
+	v.Limited = remaining == 0
+	slices.SortFunc(v.Dirs, func(a, b projectDir) int { return strings.Compare(a.Name, b.Name) })
+	return ctx.Err()
+}
+
 func (a app) start(w http.ResponseWriter, r *http.Request) {
 	if !form(w, r) {
 		return
 	}
-	cwd := strings.TrimSpace(r.PostForm.Get("cwd"))
-	if !filepath.IsAbs(cwd) || len(cwd) > 4096 {
+	cwd := r.PostForm.Get("cwd")
+	if !filepath.IsAbs(cwd) {
+		cwd = strings.TrimSpace(cwd)
+	}
+	if !filepath.IsAbs(cwd) || len(cwd) > maxProjectPath || strings.ContainsRune(cwd, 0) {
 		result(w, "", errors.New("Enter an absolute project path on the Tau host."))
 		return
 	}

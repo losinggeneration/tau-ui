@@ -112,6 +112,7 @@ type controlsView struct {
 	Stats                           *sdk.SessionStats
 	// Model tab.
 	Models         []modelOption
+	PinnedModel    string
 	Levels         []string
 	HasScope       bool
 	ThinkingUnsure bool
@@ -265,7 +266,8 @@ func loadModels(ctx context.Context, c *client.CoordinatedClient, v *controlsVie
 			key := v.Models[i].Key()
 			v.Models[i].Scoped = slices.ContainsFunc(scope.Models, func(s struct {
 				Model string `json:"model"`
-			}) bool {
+			},
+			) bool {
 				return s.Model == key
 			})
 		}
@@ -283,6 +285,16 @@ func loadModels(ctx context.Context, c *client.CoordinatedClient, v *controlsVie
 	return nil
 }
 
+// pinModel moves one model to the top without changing the order of the others.
+func (v *controlsView) pinModel(key string) {
+	v.PinnedModel = key
+	if i := slices.IndexFunc(v.Models, func(m modelOption) bool { return m.Key() == key }); i > 0 {
+		model := v.Models[i]
+		copy(v.Models[1:i+1], v.Models[:i])
+		v.Models[0] = model
+	}
+}
+
 func (v controlsView) NoThinking() bool {
 	return !v.ThinkingUnsure && (len(v.Levels) == 0 || slices.Equal(v.Levels, []string{"off"}))
 }
@@ -295,6 +307,9 @@ func (a app) controls(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		v.Error = err.Error()
+	}
+	if v.Tab == "model" {
+		v.pinModel(v.State.Model)
 	}
 	render(w, "controls-body", v)
 }
@@ -333,6 +348,8 @@ func (a app) controlAction(w http.ResponseWriter, r *http.Request) {
 	v := controlsView{ID: r.PathValue("id"), Session: f.Get("session"), Tab: f.Get("tab")}
 	action, value := f.Get("action"), f.Get("value")
 	enabled := f.Get("enabled") == "on"
+	// A command run from the composer reports in the composer's notice line.
+	inline := f.Get("inline") != ""
 	var (
 		name     string
 		args     any
@@ -401,26 +418,43 @@ func (a app) controlAction(w http.ResponseWriter, r *http.Request) {
 					return errors.New("This instance switched sessions. Reload the conversation first.")
 				}
 			}
+			if action == "resume" && c.CanLocateSession() {
+				target, err := resumeElsewhere(ctx, c, v.ID, value)
+				if err != nil {
+					return err
+				}
+				if target != "" {
+					v.ID = target
+					return nil
+				}
+			}
 			cctx, cancel := context.WithTimeout(ctx, timeout)
 			err := call(cctx, c, v.ID, name, args, nil)
 			cancel()
-			if err != nil {
-				if errors.Is(err, client.ErrOutcomeUnknown) {
-					return errors.New("Tau may have applied this. Check before trying again; nothing was resent.")
-				}
-				if unsupported(err) {
-					return errors.New("This Tau worker doesn't support that yet. Update Tau and restart the instance.")
-				}
+			switch {
+			case errors.Is(err, client.ErrOutcomeUnknown):
+				err = errors.New("Tau may have applied this. Check before trying again; nothing was resent.")
+			case unsupported(err):
+				err = errors.New("This Tau worker doesn't support that yet. Update Tau and restart the instance.")
+			}
+			if inline || (redirect && err == nil) {
 				return err
 			}
-			if redirect {
-				return nil
+			if err != nil {
+				v.Error, v.Notice = err.Error(), ""
 			}
 		}
-		if v.Error != "" {
+		if inline {
 			return nil
 		}
-		return loadControls(ctx, c, &v)
+		// Reload after a failure too, so the error doesn't blank the panel.
+		failed := v.Error
+		err := loadControls(ctx, c, &v)
+		if failed != "" {
+			v.Error = failed
+			return nil
+		}
+		return err
 	})
 	if err != nil {
 		v.Error, v.Notice = err.Error(), ""
@@ -431,6 +465,14 @@ func (a app) controlAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if v.Error == "" {
 		w.Header().Set("HX-Trigger", "conversationRefresh")
+	}
+	if inline {
+		render(w, "notice", notice{Text: cmp.Or(v.Error, v.Notice), Error: v.Error != ""})
+		return
+	}
+	if v.Tab == "model" {
+		// Keep the list steady until the user comes back to the tab.
+		v.pinModel(f.Get("pinned_model"))
 	}
 	render(w, "controls-body", v)
 }

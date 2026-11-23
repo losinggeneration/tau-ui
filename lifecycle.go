@@ -129,6 +129,43 @@ func restartWorker(ctx context.Context, c *client.CoordinatedClient, target coor
 	return inst, nil
 }
 
+// resumeElsewhere opens a session the current worker can't take over and
+// returns its instance. It returns empty when the current worker should switch.
+func resumeElsewhere(ctx context.Context, c *client.CoordinatedClient, current, ref string) (string, error) {
+	id, project, err := c.LocateSession(ctx, ref, "")
+	if err != nil {
+		return "", err
+	}
+	items, err := c.ListInstances(ctx)
+	if err != nil {
+		return "", err
+	}
+	target, launch := resumeTarget(items, current, id, project)
+	if !launch {
+		return target, nil
+	}
+	inst, err := c.StartSavedSession(ctx, project, id)
+	if err != nil {
+		return "", err
+	}
+	return inst.ID, nil
+}
+
+// resumeTarget picks the worker already running id. Without one, a worker
+// in another project can't switch to it, so the session needs its own.
+func resumeTarget(items []coord.Instance, current, id, project string) (target string, launch bool) {
+	var currentCWD string
+	for _, inst := range items {
+		if inst.SessionID == id && inst.LinkState != coord.LinkExited {
+			return inst.ID, false
+		}
+		if inst.ID == current {
+			currentCWD = inst.CWD
+		}
+	}
+	return "", currentCWD != project
+}
+
 // waitExit polls until id is gone or marked exited, like the coordinated TUI.
 func waitExit(ctx context.Context, c *client.CoordinatedClient, id string) error {
 	ticker := time.NewTicker(200 * time.Millisecond)

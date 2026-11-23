@@ -12,8 +12,10 @@ const attachmentStatus = document.querySelector("#attachment-status");
 const queuePanel = document.querySelector("#queue-panel");
 const queueItems = document.querySelector("#queue-items");
 const queueEditor = document.querySelector("#queue-editor");
-const queueForm = document.querySelector("#queue-edit-form");
-const queueNotice = document.querySelector("#queue-edit-notice");
+const browseProject = document.querySelector("#browse-project");
+const projectPicker = document.querySelector("#project-picker");
+const projectDirList = document.querySelector("#project-dir-list");
+const projectDirNotice = document.querySelector("#project-dir-notice");
 let submittedText;
 let submittedFiles;
 let openExecutions = new Set();
@@ -23,8 +25,98 @@ let focusedSummary;
 let reconnecting = false;
 let draftKey;
 let sending = false;
-let followLatest = false;
+let following = true;
+let lastScrollTop = 0;
+let swappingFeed = false;
 let oldHeight;
+let queueOpening = false;
+let queueSaved = false;
+let usageWaitTimer;
+
+// ---------- Toasts ----------
+
+const toastList = document.querySelector("#toast-list");
+const progress = document.querySelector("#progress");
+const progressList = document.querySelector("#progress-list");
+const toastLife = 6000;
+
+// Errors stay until dismissed. Anything else clears itself unless it's in use.
+function toast(text, failed = false) {
+  text = text.trim();
+  if (!toastList || !text) return;
+  for (const old of [...toastList.children]) if (old.dataset.text === text) old.remove();
+  const item = document.createElement("li");
+  item.className = `notice toast${failed ? " error" : ""}`;
+  item.dataset.text = text;
+  const body = document.createElement("span");
+  body.className = "toast-text";
+  body.textContent = text;
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "quiet toast-close";
+  close.textContent = "×";
+  close.setAttribute("aria-label", `Dismiss: ${text}`);
+  close.addEventListener("click", () => {
+    item.remove();
+    // Not the message box: focusing it would raise the keyboard on phones.
+    (toastList.querySelector("button") ?? viewport).focus({preventScroll: true});
+  });
+  item.append(body, close);
+  toastList.append(item);
+  if (failed) return;
+  const expire = () => {
+    if (item.matches(":hover, :focus-within")) setTimeout(expire, toastLife);
+    else item.remove();
+  };
+  setTimeout(expire, toastLife);
+}
+
+// Progress toasts can't be dismissed. They last until their work ends.
+function setProgress(key, text) {
+  if (!progress) return;
+  const item = [...progressList.children].find(row => row.dataset.key === key);
+  if (!text) item?.remove();
+  else if (item) item.textContent = text;
+  else {
+    const row = document.createElement("li");
+    row.className = "notice toast";
+    row.dataset.key = key;
+    row.textContent = text;
+    progressList.append(row);
+    // A collapsed list isn't announced, so screen readers get this instead.
+    document.querySelector("#progress-live").textContent = text;
+  }
+  renderProgress();
+}
+
+function renderProgress() {
+  const count = progressList.children.length;
+  progress.hidden = !count;
+  document.querySelector("#progress-count").textContent = count;
+  document.querySelector("#progress-label").textContent =
+    progress.open || !count ? "In progress" : progressList.lastElementChild.textContent;
+}
+
+if (progress) {
+  let saved = null;
+  try { saved = localStorage.getItem("tau-ui:progress-open"); }
+  catch { /* The browser can disable storage. */ }
+  // Phones start collapsed. This matches the single-pane breakpoint in style.css.
+  progress.open = saved ? saved === "true" : !matchMedia("(max-width: 55.99rem), (max-width: 71.99rem) and (orientation: portrait)").matches;
+  // Saved on click because setting .open above also fires toggle.
+  progress.querySelector("summary").addEventListener("click", () => {
+    try { localStorage.setItem("tau-ui:progress-open", String(!progress.open)); }
+    catch { /* Keep the setting for this page. */ }
+  });
+  progress.addEventListener("toggle", renderProgress);
+}
+
+// Server responses land in the hidden #notice, which htmx targets.
+if (toastList) {
+  const sink = document.querySelector("#notice");
+  new MutationObserver(() => toast(sink.textContent, !!sink.querySelector(".error")))
+    .observe(sink, {childList: true, subtree: true, characterData: true});
+}
 
 function syncComposer() {
   if (!composer) return;
@@ -47,32 +139,77 @@ function syncComposer() {
   document.querySelector("#interrupt").disabled = !ready || state.running !== "true";
 }
 
+// Tick in the browser: changing the feed HTML every second would force a full swap.
+function showUsageWait() {
+  const wait = document.querySelector("[data-resets-at]");
+  if (!wait) {
+    if (usageWaitTimer) usageWaitTimer = clearInterval(usageWaitTimer);
+    return;
+  }
+  usageWaitTimer ??= setInterval(showUsageWait, 1000);
+  const left = Math.ceil((Date.parse(wait.dataset.resetsAt) - Date.now()) / 1000);
+  if (Number.isNaN(left)) return;
+  const hours = Math.floor(left / 3600);
+  const minutes = Math.floor(left / 60) % 60;
+  const time = `${hours ? `${hours}h ` : ""}${hours || minutes ? `${minutes}m ` : ""}${left % 60}s`;
+  // Tau retries shortly after the reset, so hold here until the next snapshot.
+  wait.querySelector("span").textContent = left > 0 ? `retrying in ${time}` : "retrying now";
+}
+
 function syncQueue() {
   const state = feed.firstElementChild;
   const count = state.dataset.queueCount;
   const items = state.querySelector("#queue-update");
-  queuePanel.hidden = !Number(count);
+  const paused = state.dataset.queuePaused === "true";
+  // A paused, empty queue stays visible so it can still be resumed.
+  queuePanel.hidden = !Number(count) && !paused;
+  document.querySelector("#queue-paused").hidden = !paused;
   document.querySelector("#queue-count").textContent = count;
   if (items.innerHTML === queueItems.innerHTML) return;
   const focusedID = document.activeElement?.dataset.queueEdit;
   queueItems.replaceChildren(items.content.cloneNode(true));
-  if (focusedID) queueItems.querySelector(`[data-queue-edit="${CSS.escape(focusedID)}"]`)?.focus({preventScroll: true});
+  if (focusedID !== undefined) queueItems.querySelector(`[data-queue-edit="${CSS.escape(focusedID)}"]`)?.focus({preventScroll: true});
+}
+
+// requestError reports failures, so the promise only needs to settle.
+function queueRequest(action, values, target) {
+  return htmx.ajax("POST", `${location.pathname}/queue/${action}`, {source: queuePanel, target, values}).catch(() => {});
 }
 
 queueItems?.addEventListener("click", event => {
-  const button = event.target.closest("[data-queue-edit]");
-  if (!button) return;
-  queueForm.elements.session.value = feed.firstElementChild.dataset.session;
-  queueForm.elements.id.value = button.dataset.queueEdit;
-  queueForm.elements.text.value = button.closest("li").querySelector(".queue-text").content.textContent;
-  queueNotice.textContent = "";
-  queueEditor.showModal();
+  const session = feed.firstElementChild.dataset.session;
+  const edit = event.target.closest("[data-queue-edit]");
+  if (edit && !queueOpening && !queueEditor.open) {
+    queueOpening = true;
+    queueRequest("pause", {session, id: edit.dataset.queueEdit}, "#queue-editor-body")
+      .finally(() => { queueOpening = false; });
+  } else if (event.target.closest("[data-queue-resume]")) {
+    queuePanel.querySelector("summary").focus({preventScroll: true});
+    queueRequest("resume", {session}, "#notice");
+  }
 });
-document.querySelector("#queue-cancel")?.addEventListener("click", () => queueEditor.close());
+document.body.addEventListener("queueEditOpen", () => {
+  queueSaved = false;
+  queueEditor.showModal();
+  queueEditor.querySelector("textarea:not([readonly])")?.focus();
+});
+queueEditor?.addEventListener("click", event => {
+  if (event.target.closest("#queue-cancel")) queueEditor.close();
+});
 queueEditor?.addEventListener("cancel", event => {
-  if (queueForm.classList.contains("htmx-request")) event.preventDefault();
+  if (queueEditor.querySelector("form.htmx-request")) event.preventDefault();
+});
+// Cancel and Escape both land here. Saving resumes on the server instead.
+queueEditor?.addEventListener("close", () => {
+  const form = queueEditor.querySelector("form");
+  if (queueSaved || !form) return;
+  const session = form.elements.session.value;
+  const queue = new FormData(form).getAll("resume");
+  form.remove();
+  if (queue.length) queueRequest("resume", {session, queue}, "#notice");
 });
 document.body.addEventListener("queueEditSaved", () => {
+  queueSaved = true;
   queueEditor.close();
   queuePanel.querySelector("summary").focus({preventScroll: true});
 });
@@ -134,7 +271,35 @@ promptBox?.addEventListener("paste", event => {
 });
 
 function bottom() {
-  if (viewport) viewport.scrollTop = viewport.scrollHeight;
+  if (!viewport) return;
+  viewport.scrollTop = viewport.scrollHeight;
+  lastScrollTop = viewport.scrollTop;
+  following = true;
+}
+
+const distanceFromBottom = () => viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop;
+const pastFollowLimit = () => distanceFromBottom() > viewport.clientHeight * 0.05;
+
+// Only upward movement stops following, so content growing under a pinned view can't.
+function trackScroll() {
+  if (swappingFeed) return;
+  const movedUp = viewport.scrollTop < lastScrollTop;
+  lastScrollTop = viewport.scrollTop;
+  if (distanceFromBottom() <= 2) following = true;
+  else if (movedUp && pastFollowLimit()) following = false;
+}
+
+// Expanding a row pushes the bottom away; stay on what the reader just opened.
+function stopFollowingIfExpanded() {
+  if (!swappingFeed && pastFollowLimit()) following = false;
+}
+
+if (viewport) {
+  const keepPinned = () => { if (following) bottom(); };
+  viewport.addEventListener("scroll", trackScroll, {passive: true});
+  viewport.addEventListener("load", keepPinned, true);
+  viewport.addEventListener("toggle", stopFollowingIfExpanded, true);
+  if (globalThis.ResizeObserver) new ResizeObserver(keepPinned).observe(viewport);
 }
 
 function reconcileRows() {
@@ -192,18 +357,32 @@ function requestError(event) {
   const source = event.detail.elt;
   if (source && source === feed) {
     reconnecting = true;
-    document.querySelector("#feed-notice").textContent = "Connection lost. Reconnecting…";
+    setProgress("connection", "Connection lost. Reconnecting…");
     delete feed.lastResponse;
+    document.querySelector(".usage-wait")?.remove();
+    showUsageWait();
     syncComposer();
   } else if (source?.matches(".show-full")) {
     source.closest("[data-full]").querySelector(".full-notice").textContent = "Could not load the full content. Try again.";
-  } else if (source && source === queueForm) {
-    queueNotice.textContent = "Could not confirm the edit. Check the queue before trying again.";
-  } else if (source?.closest(".instance-actions")) {
+  } else if (source?.id === "queue-edit-form") {
+    document.querySelector("#queue-edit-notice").textContent = "Could not confirm the edit. Check the queue before trying again.";
+  } else if (source?.closest(".instance-card")) {
     document.querySelector("#lifecycle-notice").textContent = "No confirmation. Check the instance list before trying again.";
+  } else if (browseProject && (source === browseProject || projectPicker.contains(source))) {
+    projectDirNotice.textContent = "Could not load folders. Try again or enter the path manually.";
+    projectDirNotice.classList.add("error");
+  } else if (source?.id === "notice") {
+    toast("No confirmation. Check Tau before trying again; nothing was resent.", true);
+  } else if (source && controlsBody?.contains(source)) {
+    const notice = document.createElement("p");
+    notice.className = "notice error";
+    notice.textContent = "No confirmation. Check Tau before trying again; nothing was resent.";
+    controlsBody.prepend(notice);
+    controlsBody.scrollTop = 0;
   } else if (source?.closest(".mutation")) {
-    const notice = source.closest(".start-panel") ? "#start-notice" : "#notice";
-    document.querySelector(notice).textContent = "No confirmation. Check Tau before trying again; nothing was resent.";
+    const text = "No confirmation. Check Tau before trying again; nothing was resent.";
+    if (source.closest(".start-panel")) document.querySelector("#start-notice").textContent = text;
+    else toast(text, true);
   }
 }
 
@@ -211,10 +390,69 @@ for (const name of ["responseError", "sendError", "timeout"]) {
   document.body.addEventListener(`htmx:${name}`, requestError);
 }
 
+projectPicker?.addEventListener("click", event => {
+  const folder = event.target.closest("[data-project-path]");
+  if (!folder) return;
+  const directory = document.querySelector("#directory");
+  directory.value = folder.dataset.projectPath;
+  projectPicker.close();
+  // The submit button is disabled during the request, so keep focus on the field.
+  directory.focus();
+  browseProject.form.requestSubmit();
+});
+
+document.body.addEventListener("htmx:beforeRequest", event => {
+  if (!projectPicker || event.detail.target !== projectDirList || event.defaultPrevented) return;
+  if (event.detail.elt === browseProject) {
+    projectDirList.replaceChildren();
+    browseProject.focus();
+    projectPicker.showModal();
+  }
+  projectDirNotice.classList.remove("error");
+  projectDirNotice.textContent = event.detail.elt.matches(".project-dir-search") ? "Searching folders…" : "Loading folders…";
+});
+
+document.body.addEventListener("htmx:afterSwap", event => {
+  if (event.detail.target !== projectDirList || !projectPicker?.open) return;
+  projectDirNotice.textContent = "";
+  projectPicker.scrollTop = 0;
+  (projectDirList.querySelector("[data-project-search-status]") ??
+    projectDirList.querySelector("[data-project-location]"))?.focus({preventScroll: true});
+});
+
+// Working and Waiting persist across visits; Done starts closed on each page.
+const instanceGroups = { working: true, waiting: true, done: false };
+for (const name of ["working", "waiting"]) {
+  try { instanceGroups[name] = localStorage.getItem(`tau-ui:${name}-open`) !== "false"; }
+  catch { /* The browser can disable storage. */ }
+}
+
+function restoreInstanceGroups() {
+  for (const group of instances?.querySelectorAll("details[data-instance-group]") ?? []) {
+    group.open = instanceGroups[group.dataset.instanceGroup];
+  }
+}
+
+instances?.addEventListener("toggle", event => {
+  const group = event.target;
+  const name = group.dataset.instanceGroup;
+  if (!Object.hasOwn(instanceGroups, name) || !instances.contains(group)) return;
+  instanceGroups[name] = group.open;
+  if (name !== "done") {
+    try { localStorage.setItem(`tau-ui:${name}-open`, String(group.open)); }
+    catch { /* Keep the setting in memory if storage isn't available. */ }
+  }
+}, true);
+restoreInstanceGroups();
+
+function instanceCardFocused() {
+  return instances?.contains(document.activeElement) && !!document.activeElement.closest(".instance-card");
+}
+
 // Show progress on the instance card itself; the list doesn't refresh under it.
 let lifecycleBusy = false;
 document.body.addEventListener("htmx:beforeRequest", event => {
-  const button = event.detail.elt?.closest?.(".instance-actions form")?.querySelector("[data-busy-label]");
+  const button = event.detail.elt?.closest?.(".instance-card form")?.querySelector("[data-busy-label]");
   if (!button || event.defaultPrevented) return;
   lifecycleBusy = true;
   button.dataset.label = button.textContent;
@@ -222,7 +460,7 @@ document.body.addEventListener("htmx:beforeRequest", event => {
   document.querySelector("#lifecycle-notice").textContent = "";
 });
 document.body.addEventListener("htmx:afterRequest", event => {
-  const button = event.detail.elt?.closest?.(".instance-actions form")?.querySelector("[data-busy-label]");
+  const button = event.detail.elt?.closest?.(".instance-card form")?.querySelector("[data-busy-label]");
   if (!button) return;
   lifecycleBusy = false;
   if (button.dataset.label) button.textContent = button.dataset.label;
@@ -232,13 +470,21 @@ document.body.addEventListener("htmx:beforeRequest", event => {
   const source = event.detail.elt;
   if (source && (source === feed || source === instances)) {
     const refreshing = event.detail.requestConfig.triggeringEvent?.type === "instanceListRefresh";
-    if (!refreshing && (document.hidden || (source === instances && instances.contains(document.activeElement)))) {
+    if (!refreshing && (document.hidden || (source === instances && (lifecycleBusy || instanceCardFocused())))) {
       event.preventDefault();
     }
   }
+  if (source?.matches?.(".compact-form form") && !event.defaultPrevented) {
+    source.querySelector("button").textContent = "Compacting…";
+    setProgress("compact", "Compacting…");
+  }
   if (composer && source === composer) {
     if (!promptBox.value.trim() && !attachments.files.length) {
-      document.querySelector("#notice").textContent = "Enter a message or attach a file.";
+      toast("Enter a message or attach a file.");
+      event.preventDefault();
+      return;
+    }
+    if (!attachments.files.length && runTypedCommand()) {
       event.preventDefault();
       return;
     }
@@ -257,11 +503,15 @@ document.body.addEventListener("promptAccepted", () => {
     attachments.value = "";
     renderAttachments();
   }
-  followLatest = true;
+  following = true;
 });
 
 document.body.addEventListener("htmx:afterRequest", event => {
   const source = event.detail.elt;
+  if (source?.matches?.(".compact-form form")) {
+    source.querySelector("button").textContent = "Compact now";
+    setProgress("compact");
+  }
   if (composer && source === composer) {
     sending = false;
     syncComposer();
@@ -276,7 +526,7 @@ document.body.addEventListener("htmx:beforeSwap", event => {
   if (target === instances) {
     const response = event.detail.serverResponse.trim();
     const refreshing = event.detail.requestConfig.triggeringEvent?.type === "instanceListRefresh";
-    if (lifecycleBusy || (!refreshing && (instances.contains(document.activeElement) || instances.lastResponse === response))) {
+    if (lifecycleBusy || (!refreshing && (instanceCardFocused() || instances.lastResponse === response))) {
       event.detail.shouldSwap = false;
     } else if (event.detail.shouldSwap) {
       instances.lastResponse = response;
@@ -296,7 +546,8 @@ document.body.addEventListener("htmx:beforeSwap", event => {
     focusedSummary = active.matches(".execution summary") ? active.closest(".execution").dataset.entry : null;
     openExecutions = new Set(Array.from(viewport.querySelectorAll(".execution details[open]"), detail => detail.parentElement.dataset.entry));
     previousRows = Array.from(feed.querySelectorAll("[data-entry]"));
-    followLatest ||= !active.closest(".request, .execution") && viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop < 80;
+    trackScroll(); // A scroll whose event hasn't fired yet still counts.
+    swappingFeed = true;
     feed.lastResponse = incoming;
   } else if (target?.matches("[data-full]") && event.detail.shouldSwap) {
     const response = new DOMParser().parseFromString(event.detail.serverResponse, "text/html");
@@ -310,6 +561,10 @@ document.body.addEventListener("htmx:beforeSwap", event => {
   }
 });
 
+document.body.addEventListener("htmx:afterSwap", event => {
+  if (instances && event.detail.target === instances) restoreInstanceGroups();
+});
+
 document.body.addEventListener("htmx:afterSettle", event => {
   if (event.detail.target === feed) {
     const rows = reconcileRows();
@@ -319,16 +574,20 @@ document.body.addEventListener("htmx:afterSettle", event => {
     }
     if (focusedSummary) rows.get(focusedSummary)?.querySelector("summary")?.focus({preventScroll: true});
     reconnecting = false;
-    document.querySelector("#feed-notice").textContent = "";
+    setProgress("connection");
     syncQueue();
     syncComposer();
-    if (followLatest) bottom();
+    showUsageWait();
+    if (following) bottom();
     else if (scrollAnchor) {
       const [key, offset] = scrollAnchor;
       const row = rows.get(key);
       if (row) viewport.scrollTop += row.getBoundingClientRect().top - viewport.getBoundingClientRect().top - offset;
     }
-    followLatest = false;
+    lastScrollTop = viewport.scrollTop;
+    swappingFeed = false;
+  } else if (event.detail.target?.matches?.("[data-full]")) {
+    stopFollowingIfExpanded();
   } else if (oldHeight !== undefined && event.detail.elt?.closest?.("#archive")) {
     reconcileRows();
     viewport.scrollTop += viewport.scrollHeight - oldHeight;
@@ -371,19 +630,30 @@ function openControls(tab, request) {
   if (!controls.open) controls.showModal();
 }
 
-// Runs a panel action from the command menu and shows its result in the panel.
-function controlAction(tab, action, value = "") {
-  const session = composer.elements.session.value;
-  openControls(tab, () => htmx.ajax("POST", `${location.pathname}/controls`, {
-    target: controlsBody, values: { action, value, session, tab },
-  }));
+// Runs a command without opening the panel and reports in a toast.
+// A failed command puts its typed arguments back in the message box.
+function directAction(action, value = "", busy = "") {
+  const notice = document.querySelector("#notice");
+  notice.textContent = "";
+  if (busy) setProgress(action, busy);
+  const restore = () => {
+    if (busy) setProgress(action);
+    if (value && !promptBox.value && !notice.querySelector(".success")) {
+      promptBox.value = `/${action} ${value}`;
+      saveDraft();
+    }
+  };
+  htmx.ajax("POST", `${location.pathname}/controls`, {
+    source: "#notice", target: "#notice",
+    values: { action, value, session: composer.elements.session.value, inline: "1" },
+  }).then(restore, restore);
 }
 
 function applyModelFilter() {
   const list = controlsBody?.querySelector("#model-list");
   if (!list) return;
   const query = controlsBody.querySelector('[data-filter-list="#model-list"]')?.value.trim().toLowerCase() ?? "";
-  const scopedOnly = list.hasAttribute("data-scoped-only");
+  const scopedOnly = !!controlsBody.querySelector('[data-scope="scoped"][aria-pressed="true"]');
   for (const option of list.querySelectorAll(".option")) {
     const inScope = !scopedOnly || option.hasAttribute("data-scoped") || option.getAttribute("aria-checked") === "true";
     option.hidden = !inScope || !option.textContent.toLowerCase().includes(query);
@@ -400,11 +670,51 @@ document.addEventListener("click", event => {
   const scope = event.target.closest("[data-scope]");
   if (scope) {
     for (const b of controlsBody.querySelectorAll("[data-scope]")) b.setAttribute("aria-pressed", String(b === scope));
-    controlsBody.querySelector("#model-list").toggleAttribute("data-scoped-only", scope.dataset.scope === "scoped");
     applyModelFilter();
   }
   const copy = event.target.closest("[data-copy-reply]");
   if (copy) copyLastReply(copy);
+});
+
+// The viewer fits large images to the screen. Clicking one toggles actual size.
+function openImage(source) {
+  const viewer = document.querySelector("#image-viewer");
+  const image = viewer.querySelector("img");
+  image.classList.remove("zoomed", "can-zoom");
+  image.removeAttribute("src");
+  image.onload = () => image.classList.toggle("can-zoom",
+    image.naturalWidth > viewer.clientWidth || image.naturalHeight > viewer.clientHeight);
+  image.alt = source.alt;
+  image.src = source.currentSrc || source.src;
+  viewer.showModal();
+}
+
+function toggleImageZoom(event, viewer, image) {
+  const before = image.getBoundingClientRect();
+  const x = (event.clientX - before.left) / before.width;
+  const y = (event.clientY - before.top) / before.height;
+  image.classList.toggle("zoomed");
+  // Keep the clicked point under the pointer.
+  const after = image.getBoundingClientRect();
+  viewer.scrollTo(viewer.scrollLeft + after.left + x * after.width - event.clientX,
+    viewer.scrollTop + after.top + y * after.height - event.clientY);
+}
+
+document.addEventListener("click", event => {
+  const source = event.target.closest?.(".message-image");
+  if (source) return openImage(source);
+  const viewer = event.target.closest?.("#image-viewer");
+  if (!viewer) return;
+  // A press on the viewer's scrollbars isn't a press on the background.
+  if (event.clientX >= viewer.clientWidth || event.clientY >= viewer.clientHeight) return;
+  if (event.target.tagName !== "IMG") return viewer.close();
+  if (event.target.matches(".zoomed, .can-zoom")) toggleImageZoom(event, viewer, event.target);
+});
+
+document.addEventListener("keydown", event => {
+  if ((event.key !== "Enter" && event.key !== " ") || !event.target.matches?.(".message-image")) return;
+  event.preventDefault();
+  openImage(event.target);
 });
 
 controls?.addEventListener("input", event => {
@@ -434,27 +744,33 @@ async function copyLastReply(button) {
 
 document.body.addEventListener("htmx:afterSettle", event => {
   applyMeters();
-  if (event.detail.target === controlsBody) applyModelFilter();
+  if (event.detail.target === controlsBody) {
+    applyModelFilter();
+    // Actions sit below the fold, and their result shows at the top.
+    if (controlsBody.querySelector(":scope > .notice")) controlsBody.scrollTop = 0;
+  }
 });
 document.body.addEventListener("htmx:oobAfterSwap", applyMeters);
 
 // ---------- Command menu ----------
 
-// Built-in commands map to the controls panel. Skill, prompt, and plugin
-// commands from Tau are typed into the message box so you can add arguments.
+// Built-in commands either run directly or open their part of the controls
+// panel. Skill, prompt, and plugin commands from Tau are typed into the
+// message box so you can add arguments. `args` commands accept typed text;
+// picking /compact from the menu leaves room to add instructions before Send.
 const builtinCommands = [
   { name: "model", description: "Switch the active model", run: () => openControls("model") },
   { name: "thinking", description: "Set the thinking level", run: () => openControls("model") },
-  { name: "compact", description: "Compact session history", run: () => openControls("session") },
-  { name: "retry", description: "Resume an interrupted or failed run", run: () => controlAction("session", "retry") },
-  { name: "new", description: "Start a new session", run: () => { if (confirm("Start a new session? This one stays in History.")) controlAction("session", "new"); } },
+  { name: "compact", description: "Compact session history", args: true, pick: () => { promptBox.value = "/compact "; promptBox.focus(); saveDraft(); }, run: (text = "") => directAction("compact", text, "Compacting…") },
+  { name: "retry", description: "Resume an interrupted or failed run", run: () => directAction("retry") },
+  { name: "new", description: "Start a new session", run: () => directAction("new") },
   { name: "resume", description: "Resume a saved session", run: () => openControls("sessions") },
   { name: "fork", description: "Fork from a message", run: () => openControls("session", () => htmx.ajax("GET", `${location.pathname}/controls/pick?kind=fork&session=${encodeURIComponent(composer.elements.session.value)}`, { target: controlsBody })) },
   { name: "forget", description: "Drop messages from a picked point onward", run: () => openControls("session", () => htmx.ajax("GET", `${location.pathname}/controls/pick?kind=forget&session=${encodeURIComponent(composer.elements.session.value)}`, { target: controlsBody })) },
-  { name: "name", description: "Name this session", run: () => openControls("session") },
-  { name: "copy", description: "Copy the last reply", run: () => { const b = document.createElement("button"); b.dataset.copyReply = `${location.pathname}/last-reply`; copyLastReply(b).then(() => { document.querySelector("#notice").textContent = b.textContent === "Copied" ? "Copied the last reply." : "Couldn't copy the last reply."; }); } },
+  { name: "name", description: "Name this session", args: true, run: text => text ? directAction("name", text) : openControls("session") },
+  { name: "copy", description: "Copy the last reply", run: () => { const b = document.createElement("button"); b.dataset.copyReply = `${location.pathname}/last-reply`; copyLastReply(b).then(() => { const copied = b.textContent === "Copied"; toast(copied ? "Copied the last reply." : "Couldn't copy the last reply.", !copied); }); } },
   { name: "export", description: "Download the session as HTML", run: () => { location.href = `${location.pathname}/export`; } },
-  { name: "reload", description: "Reload plugins and resources", run: () => controlAction("session", "reload") },
+  { name: "reload", description: "Reload plugins and resources", run: () => directAction("reload") },
   { name: "mcp", description: "Manage MCP servers", run: () => openControls("tools") },
   { name: "plugins", description: "Enable or disable plugins", run: () => openControls("tools") },
   { name: "settings", description: "Open session controls", run: () => openControls("session") },
@@ -512,7 +828,20 @@ function runCommand(command) {
   promptBox.value = "";
   saveDraft();
   palette.hidden = true;
-  command.run();
+  (command.pick ?? command.run)();
+}
+
+// Send runs a typed built-in command instead of posting it as a message.
+// Text after a command that takes none is left to go to Tau as typed.
+function runTypedCommand() {
+  const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(promptBox.value.trim());
+  const command = match && builtinCommands.find(c => c.name === match[1]);
+  if (!command || (match[2] && !command.args)) return false;
+  promptBox.value = "";
+  saveDraft();
+  if (palette) palette.hidden = true;
+  command.run(match[2]);
+  return true;
 }
 
 promptBox?.addEventListener("input", () => { paletteActive = 0; updatePalette(); });
@@ -536,4 +865,5 @@ function paletteKey(event) {
 }
 if (controls) applyMeters();
 syncComposer();
+showUsageWait();
 bottom();

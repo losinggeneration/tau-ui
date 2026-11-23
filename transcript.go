@@ -46,6 +46,13 @@ type liveItem struct {
 
 type liveActivity struct {
 	Messages, Tools, Bash []liveItem
+	UsageLimitWait        *usageLimitWait `json:"usage_limit_wait"`
+}
+
+// usageLimitWait is set while the worker sleeps until a provider limit resets.
+type usageLimitWait struct {
+	Provider string `json:"provider"`
+	ResetsAt string `json:"resets_at"`
 }
 
 type argument struct{ Label, Value string }
@@ -206,7 +213,7 @@ func (src contentSource) transcript(entries []client.HistoryEntry, live liveActi
 				if bubble.Text != "" || bubble.Full != "" {
 					out = append(out, bubble)
 				}
-				continue
+				break
 			}
 			narration := -1
 			for i, block := range msg.Content {
@@ -277,6 +284,9 @@ func (src contentSource) transcript(entries []client.HistoryEntry, live liveActi
 				run.Status = fmt.Sprintf("Exit %d", bash.ExitCode)
 			}
 			out = append(out, message{ID: id, Run: run})
+		}
+		if msg.Role == "assistant" && msg.ErrorMessage != "" && messageText(msg) == "" {
+			out = append(out, message{ID: id + ":error", Role: "error", Text: msg.ErrorMessage})
 		}
 	}
 	for _, tool := range live.Tools {
