@@ -371,7 +371,8 @@ func (a app) controlAction(w http.ResponseWriter, r *http.Request) {
 			v.Error = "Enter a name for this session."
 			break
 		}
-		name, args, v.Notice = "set_session_name", map[string]string{"name": strings.TrimSpace(value)}, "Renamed."
+		// The command has no session guard, so check before renaming.
+		name, args, guard, v.Notice = "set_session_name", map[string]string{"name": strings.TrimSpace(value)}, true, "Renamed."
 	case "compact":
 		// Compaction replies only once it finishes.
 		name, args, guard, timeout, v.Notice = "compact", map[string]string{"custom_instructions": value}, true, 10*time.Minute, "History compacted."
@@ -464,7 +465,11 @@ func (a app) controlAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if v.Error == "" {
-		w.Header().Set("HX-Trigger", "conversationRefresh")
+		trigger := "conversationRefresh"
+		if action == "name" {
+			trigger += ", instanceListRefresh"
+		}
+		w.Header().Set("HX-Trigger", trigger)
 	}
 	if inline {
 		render(w, "notice", notice{Text: cmp.Or(v.Error, v.Notice), Error: v.Error != ""})

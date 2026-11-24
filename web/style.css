@@ -1373,6 +1373,10 @@ textarea.prompt,
   display: none;
 }
 
+#lifecycle-notice > span {
+  display: block;
+}
+
 .notice.error,
 .error {
   color: #ffb3b3;

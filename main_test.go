@@ -356,6 +356,9 @@ func TestHTTPToCoordinator(t *testing.T) {
 	if list := request(http.MethodGet, "/instances", true, "", nil).Body.String(); strings.Contains(list, `hx-confirm="Restart`) || !strings.Contains(list, `data-busy-label="Restarting…"`) {
 		t.Error("restart should run without a confirmation dialog and show progress on the card")
 	}
+	if list := request(http.MethodGet, "/instances", true, "", nil).Body.String(); strings.Contains(list, `hx-sync="#instance-list:drop"`) || !strings.Contains(list, `hx-sync="closest .instance-card:drop"`) || !strings.Contains(list, `hx-swap="beforeend"`) {
+		t.Error("card actions should only block other actions on the same card and keep each other's errors")
+	}
 	inbox := request(http.MethodGet, "/instances?active=ready-new", true, "", nil).Body.String()
 	previousIndex := -1
 	for _, marker := range []string{`data-instance-group="attention"`, `href="/worker/limited"`,
@@ -878,6 +881,7 @@ func fakeRPC(t *testing.T, link *coord.Link, commands chan<- json.RawMessage, mo
 				t.Errorf("unexpected command: %s", f.Command)
 				return
 			}
+		case coord.TypeAttach, coord.TypeDetach: // The restart watcher follows open pages.
 		default:
 			t.Errorf("unexpected frame: %s", f.Type)
 			return

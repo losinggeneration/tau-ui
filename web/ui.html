@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
   <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"historyEnabled":false}'>
-  <title>{{if .ID}}{{project .CWD}} · {{end}}Tau UI</title>
+  <title>{{if .ID}}{{.DisplayName}} · {{end}}Tau UI</title>
   <link rel="manifest" href="/app.webmanifest" crossorigin="use-credentials">
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/code.css">
@@ -45,7 +45,7 @@
     <main class="workspace">
       <header class="workspace-header">
         <a class="back button quiet" href="/">Instances</a>
-        <div class="workspace-title"><p class="eyebrow">Conversation</p><h1>{{project .CWD}}</h1>
+        <div class="workspace-title"><p class="eyebrow">Conversation</p><h1 id="workspace-name">{{.DisplayName}}</h1>
           {{if .CWD}}<p class="instance-path" title="{{.CWD}}">{{.CWD}}</p>{{end}}
         </div>
         {{template "session-chip" .Feed}}
@@ -165,6 +165,7 @@
 {{end}}
 
 {{define "instances"}}
+{{if and .Live .Current.ID}}<title>{{.Current.DisplayName}} · Tau UI</title><h1 id="workspace-name" hx-swap-oob="true">{{.Current.DisplayName}}</h1>{{end}}
 {{if .Error}}<p class="notice error" role="status">{{.Error}}</p>{{else}}
   {{if .NoneRunning}}<div class="instance-lane"><p class="hint">No running instances. Start one in a project directory.</p></div>{{end}}
   {{range .Groups}}
@@ -184,7 +185,7 @@
 {{end}}
 
 {{define "instance-preview"}}
-  <div class="instance-main"><span class="instance-name">{{project .CWD}}</span>{{if and .Outdated (ne .LinkState "exited") (not .Updatable)}}<span class="instance-outdated" role="img" aria-label="Out of date" title="Running an older Tau build. It can't be restarted from here right now.">⚠︎</span>{{end}}<span class="badge" data-state="{{.Badge}}" title="{{.Label}}"><span class="badge-label">{{.Label}}</span></span></div>
+  <div class="instance-main"><span class="instance-name">{{.DisplayName}}</span>{{if and .Outdated (ne .LinkState "exited") (not .Updatable)}}<span class="instance-outdated" role="img" aria-label="Out of date" title="Running an older Tau build. It can't be restarted from here right now.">⚠︎</span>{{end}}<span class="badge" data-state="{{.Badge}}" title="{{.Label}}"><span class="badge-label">{{.Label}}</span></span></div>
   {{if .CWD}}<span class="instance-path" title="{{.CWD}}">{{.CWD}}</span>{{end}}
   {{if .FirstPrompt}}<span class="preview">{{.FirstPrompt}}</span>{{end}}
 {{end}}
@@ -197,33 +198,33 @@
     <a href="/worker/{{.ID}}" class="instance" {{if .Active}}aria-current="page"{{end}}>{{template "instance-preview" .}}</a>
     {{end}}
     {{if .Updatable}}
-    <form class="instance-update" method="post" hx-post="/worker/{{.ID}}/lifecycle" hx-sync="#instance-list:drop" hx-target="#lifecycle-notice" hx-disabled-elt="find button" {{if .Running}}hx-confirm="{{project .CWD}} may have a run in progress. Restart it anyway?"{{end}}>
+    <form class="instance-update" method="post" hx-post="/worker/{{.ID}}/lifecycle" hx-sync="closest .instance-card:drop" hx-target="#lifecycle-notice" hx-swap="beforeend" hx-disabled-elt="find button" {{if .Running}}hx-confirm="{{.DisplayName}} may have a run in progress. Restart it anyway?"{{end}}>
       <input type="hidden" name="session" value="{{.SessionID}}">
       <input type="hidden" name="active" value="{{if .Active}}{{.ID}}{{end}}">
       <input type="hidden" name="op" value="restart">
-      <button class="quiet" type="submit" aria-label="Out of date. Restart {{project .CWD}} on the current Tau build" title="Out of date. Restart on the current Tau build." data-busy-label="Restarting…">⚠︎ ⟳</button>
+      <button class="quiet" type="submit" aria-label="Out of date. Restart {{.DisplayName}} on the current Tau build" title="Out of date. Restart on the current Tau build." data-busy-label="Restarting…">⚠︎ ⟳</button>
     </form>
     {{end}}
     {{if and .SessionID (ne .Badge "offline")}}
-    <fieldset class="instance-actions" aria-label="Actions for {{project .CWD}}" hx-sync="#instance-list:drop" hx-target="#lifecycle-notice" hx-disabled-elt="closest fieldset">
+    <fieldset class="instance-actions" aria-label="Actions for {{.DisplayName}}" hx-sync="closest .instance-card:drop" hx-target="#lifecycle-notice" hx-swap="beforeend" hx-disabled-elt="closest fieldset">
       {{if and (eq .Badge "limited") (not .Dismissed)}}
       <form method="post" hx-post="/worker/{{.ID}}/dismiss-limit">
         <input type="hidden" name="limit" value="{{.Limit}}">
-        <button class="quiet" type="submit" aria-label="Dismiss the usage limit for {{project .CWD}} and move it to Waiting" title="Move to Waiting" data-busy-label="Dismissing…">Dismiss</button>
+        <button class="quiet" type="submit" aria-label="Dismiss the usage limit for {{.DisplayName}} and move it to Waiting" title="Move to Waiting" data-busy-label="Dismissing…">Dismiss</button>
       </form>
       {{end}}
-      <form method="post" hx-post="/worker/{{.ID}}/lifecycle" hx-confirm="Stop {{project .CWD}}?">
+      <form method="post" hx-post="/worker/{{.ID}}/lifecycle" hx-confirm="Stop {{.DisplayName}}?">
         <input type="hidden" name="session" value="{{.SessionID}}">
         <input type="hidden" name="active" value="{{if .Active}}{{.ID}}{{end}}">
         <input type="hidden" name="op" value="stop">
-        <button class="quiet" type="submit" aria-label="Stop {{project .CWD}}" data-busy-label="Stopping…">Stop</button>
+        <button class="quiet" type="submit" aria-label="Stop {{.DisplayName}}" data-busy-label="Stopping…">Stop</button>
       </form>
       {{if .Restart}}
       <form method="post" hx-post="/worker/{{.ID}}/lifecycle">
         <input type="hidden" name="session" value="{{.SessionID}}">
         <input type="hidden" name="active" value="{{if .Active}}{{.ID}}{{end}}">
         <input type="hidden" name="op" value="restart">
-        <button class="quiet" type="submit" aria-label="Restart {{project .CWD}}" data-busy-label="Restarting…">Restart</button>
+        <button class="quiet" type="submit" aria-label="Restart {{.DisplayName}}" data-busy-label="Restarting…">Restart</button>
       </form>
       {{end}}
     </fieldset>

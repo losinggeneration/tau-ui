@@ -27,7 +27,6 @@ import (
 var web embed.FS
 
 var pages = template.Must(template.New("ui.html").Funcs(controlFuncs).Funcs(template.FuncMap{
-	"project": projectName,
 	"requestID": func(session, id string) string {
 		return "request-" + base64.RawURLEncoding.EncodeToString([]byte(session+"\x00"+id))
 	},
@@ -157,13 +156,14 @@ func serve(ctx context.Context, addr, tlsCert, tlsKey, socket, password, project
 }
 
 func newApp(ctx context.Context, socket, password, projectRoot string, caCert []byte) http.Handler {
-	a := app{socket: socket, inbox: new(inboxOrder), projectRoot: projectRoot}
+	a := app{socket: socket, inbox: new(inboxOrder), restarts: newRestartWatch(), projectRoot: projectRoot}
 	if path, err := dismissalsPath(); err != nil {
 		log.Printf("find dismissed usage limits: %v", err)
 	} else {
 		a.inbox.loadDismissed(path)
 	}
 	go a.inbox.follow(ctx, socket)
+	go a.restarts.follow(ctx, socket)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", a.page)
 	mux.HandleFunc("GET /instances", a.instances)

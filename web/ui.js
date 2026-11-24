@@ -353,21 +353,51 @@ function reconcileRows() {
   return seen;
 }
 
+// Moves this page to a restarted instance without reloading, so the draft and
+// any chosen attachments stay put. The session, and so the draft key, is unchanged.
+function followInstance(id) {
+  const from = location.pathname;
+  const to = `/worker/${encodeURIComponent(id)}`;
+  if (from === to || !from.startsWith("/worker/")) return;
+  const active = `/instances?active=${from.slice("/worker/".length)}`;
+  const routes = ["hx-get", "hx-post", "action", "src", "data-commands", "data-copy-reply", "data-full"];
+  history.replaceState(null, "", to);
+  for (const element of document.querySelectorAll(routes.map(name => `[${name}]`).join())) {
+    for (const name of routes) {
+      const value = element.getAttribute(name);
+      if (value?.startsWith(`${from}/`)) element.setAttribute(name, to + value.slice(from.length));
+      else if (value === active) element.setAttribute(name, `/instances?active=${encodeURIComponent(id)}`);
+    }
+  }
+  htmx.process(document.body);
+  htmx.trigger(document.body, "instanceListRefresh");
+  htmx.trigger(document.body, "conversationRefresh");
+}
+
 function requestError(event) {
   const source = event.detail.elt;
   if (source && source === feed) {
+    const replacement = event.detail.xhr?.getResponseHeader?.("X-Tau-Replacement");
+    const state = event.detail.xhr?.getResponseHeader?.("X-Tau-Instance-State");
     reconnecting = true;
-    setProgress("connection", "Connection lost. Reconnecting…");
+    setProgress("connection", replacement ? "Instance restarted. Reconnecting…" :
+      state === "restarting" ? "Instance restarting…" :
+      state === "exited" ? "Worker exited." : "Connection lost. Reconnecting…");
+    // The next feed must swap even if unchanged, since that clears this state.
     delete feed.lastResponse;
     document.querySelector(".usage-wait")?.remove();
     showUsageWait();
     syncComposer();
+    if (replacement) followInstance(replacement);
   } else if (source?.matches(".show-full")) {
     source.closest("[data-full]").querySelector(".full-notice").textContent = "Could not load the full content. Try again.";
   } else if (source?.id === "queue-edit-form") {
     document.querySelector("#queue-edit-notice").textContent = "Could not confirm the edit. Check the queue before trying again.";
   } else if (source?.closest(".instance-card")) {
-    document.querySelector("#lifecycle-notice").textContent = "No confirmation. Check the instance list before trying again.";
+    const problem = document.createElement("span");
+    problem.className = "error";
+    problem.textContent = "No confirmation. Check the instance list before trying again.";
+    document.querySelector("#lifecycle-notice").append(problem);
   } else if (browseProject && (source === browseProject || projectPicker.contains(source))) {
     projectDirNotice.textContent = "Could not load folders. Try again or enter the path manually.";
     projectDirNotice.classList.add("error");
@@ -450,29 +480,44 @@ function instanceCardFocused() {
 }
 
 // Show progress on the instance card itself; the list doesn't refresh under it.
-let lifecycleBusy = false;
+// Tracked by request because htmx reports afterRequest twice for a removed element.
+const lifecycleRequests = new Set();
+let listRequest = null;
+let listStale = false;
+
+// The list's sync drops a refresh while one is loading, and its swap waits for
+// card actions, so hold the refresh until both are done.
+function refreshStaleList() {
+  if (!listStale || listRequest || lifecycleRequests.size) return;
+  listStale = false;
+  htmx.trigger(document.body, "instanceListRefresh");
+}
+
 document.body.addEventListener("htmx:beforeRequest", event => {
   const button = event.detail.elt?.closest?.(".instance-card form")?.querySelector("[data-busy-label]");
   if (!button || event.defaultPrevented) return;
-  lifecycleBusy = true;
+  // Errors from a batch stay up until the next batch starts.
+  if (!lifecycleRequests.size) document.querySelector("#lifecycle-notice").textContent = "";
+  lifecycleRequests.add(event.detail.xhr);
   button.dataset.label = button.textContent;
   button.textContent = button.dataset.busyLabel;
-  document.querySelector("#lifecycle-notice").textContent = "";
 });
 document.body.addEventListener("htmx:afterRequest", event => {
   const button = event.detail.elt?.closest?.(".instance-card form")?.querySelector("[data-busy-label]");
-  if (!button) return;
-  lifecycleBusy = false;
+  if (!button || !lifecycleRequests.delete(event.detail.xhr)) return;
   if (button.dataset.label) button.textContent = button.dataset.label;
+  listStale = true;
+  refreshStaleList();
 });
 
 document.body.addEventListener("htmx:beforeRequest", event => {
   const source = event.detail.elt;
   if (source && (source === feed || source === instances)) {
     const refreshing = event.detail.requestConfig.triggeringEvent?.type === "instanceListRefresh";
-    if (!refreshing && (document.hidden || (source === instances && (lifecycleBusy || instanceCardFocused())))) {
+    if (!refreshing && (document.hidden || (source === instances && (lifecycleRequests.size || instanceCardFocused())))) {
       event.preventDefault();
     }
+    if (source === instances && !event.defaultPrevented) listRequest = event.detail.xhr;
   }
   if (source?.matches?.(".compact-form form") && !event.defaultPrevented) {
     source.querySelector("button").textContent = "Compacting…";
@@ -508,6 +553,10 @@ document.body.addEventListener("promptAccepted", () => {
 
 document.body.addEventListener("htmx:afterRequest", event => {
   const source = event.detail.elt;
+  if (source === instances && event.detail.xhr === listRequest) {
+    listRequest = null;
+    refreshStaleList();
+  }
   if (source?.matches?.(".compact-form form")) {
     source.querySelector("button").textContent = "Compact now";
     setProgress("compact");
@@ -526,7 +575,7 @@ document.body.addEventListener("htmx:beforeSwap", event => {
   if (target === instances) {
     const response = event.detail.serverResponse.trim();
     const refreshing = event.detail.requestConfig.triggeringEvent?.type === "instanceListRefresh";
-    if (lifecycleBusy || (!refreshing && (instanceCardFocused() || instances.lastResponse === response))) {
+    if (lifecycleRequests.size || (!refreshing && (instanceCardFocused() || instances.lastResponse === response))) {
       event.detail.shouldSwap = false;
     } else if (event.detail.shouldSwap) {
       instances.lastResponse = response;

@@ -28,6 +28,7 @@ import (
 type app struct {
 	socket      string
 	inbox       *inboxOrder
+	restarts    *restartWatch
 	projectRoot string
 }
 
@@ -56,6 +57,11 @@ type instance struct {
 	coord.Instance
 	Label, Badge, Limit        string
 	Active, Restart, Dismissed bool
+}
+
+// DisplayName is the session name, or the project directory without one.
+func (i instance) DisplayName() string {
+	return cmp.Or(i.SessionName, projectName(i.CWD))
 }
 
 // Running reports whether a restart could interrupt a run. An unknown state
@@ -107,6 +113,8 @@ type registry struct {
 	Error   string
 	Groups  []instanceGroup
 	Current instance
+	// Live marks a poll, which also updates the open conversation's heading.
+	Live bool
 }
 
 // NoneRunning reports whether only exited workers, or none at all, are listed.
@@ -186,6 +194,7 @@ func (a app) instances(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		v.Error = err.Error()
 	}
+	v.Live = true
 	render(w, "instances", v)
 }
 
@@ -194,6 +203,11 @@ type pageView struct {
 	ID, Session, CWD string
 	Feed             feedView
 	Before           string
+}
+
+// DisplayName names the open conversation.
+func (v pageView) DisplayName() string {
+	return cmp.Or(v.Registry.Current.SessionName, projectName(v.CWD))
 }
 
 func (a app) page(w http.ResponseWriter, r *http.Request) {
@@ -334,11 +348,23 @@ func snapshot(ctx context.Context, c *client.CoordinatedClient, id, expected str
 func (a app) feed(w http.ResponseWriter, r *http.Request) {
 	id, expected := r.PathValue("id"), r.URL.Query().Get("session")
 	v := feedView{ID: id, Session: expected}
+	var next, state string
 	err := a.rpc(r, 4*time.Second, func(ctx context.Context, c *client.CoordinatedClient) (err error) {
 		v, err = snapshot(ctx, c, id, expected)
-		return err
+		if err != nil {
+			next, state = a.restarts.fate(ctx, c, id, expected)
+			return err
+		}
+		a.restarts.view(id)
+		return nil
 	})
 	if err != nil {
+		if next != "" {
+			w.Header().Set(replacementHeader, next)
+		}
+		if state != "" {
+			w.Header().Set(instanceStateHeader, state)
+		}
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
