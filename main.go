@@ -186,6 +186,7 @@ func newApp(ctx context.Context, socket, password, projectRoot string, caCert []
 	mux.HandleFunc("GET /worker/{id}/export", a.exportHTML)
 	mux.HandleFunc("GET /worker/{id}/last-reply", a.lastReply)
 	mux.HandleFunc("GET /worker/{id}/commands", a.commands)
+	mux.HandleFunc("POST /worker/{id}/complete", a.completePath)
 	mux.HandleFunc("GET /project-dirs", a.projectDirs)
 	mux.HandleFunc("POST /start", a.start)
 	mux.HandleFunc("GET /app.webmanifest", func(w http.ResponseWriter, r *http.Request) {

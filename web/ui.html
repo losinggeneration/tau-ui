@@ -78,7 +78,7 @@
           <input type="hidden" name="session" value="{{.Session}}">
           <ul id="palette" class="command-palette" role="listbox" aria-label="Commands" hidden></ul>
           <label for="prompt" class="sr-only">Message Tau</label>
-          <textarea id="prompt" class="prompt" name="text" rows="2" placeholder="Message Tau, or type / for commands" aria-controls="palette" aria-autocomplete="list" data-commands="/worker/{{.ID}}/commands"></textarea>
+          <textarea id="prompt" class="prompt" name="text" rows="2" placeholder="Message Tau, type / for commands or @ for files" aria-controls="palette" aria-autocomplete="list" data-commands="/worker/{{.ID}}/commands" data-complete="/worker/{{.ID}}/complete"></textarea>
           <fieldset class="attachment-controls" aria-label="Attachments">
             <label class="attachment-picker">
               <input id="attachments" class="sr-only" name="attachment" type="file" multiple>

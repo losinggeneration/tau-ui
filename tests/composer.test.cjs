@@ -179,3 +179,64 @@ test("progress starts collapsed on phones and shows the newest item", () => {
   assert.equal(h.label.textContent, "Reconnecting…");
   assert.equal(toastHarness({ narrow: true, saved: "true" }).progress.open, true);
 });
+
+test("typing @ offers the instance's files and applies the chosen one", async () => {
+  const listeners = {};
+  const requests = [];
+  const element = extra => ({
+    addEventListener() {}, querySelector: () => null, querySelectorAll: () => [],
+    setAttribute(name, value) { this[`@${name}`] = value; }, getAttribute(name) { return this[`@${name}`] ?? null; },
+    matches: () => false, closest: () => null, dataset: {}, ...extra,
+  });
+  const prompt = element({
+    value: "see @ma", selectionStart: 7, selectionEnd: 7, focus() {},
+    dataset: { complete: "/worker/w/complete" },
+    addEventListener(name, handler) { (listeners[name] ??= []).push(handler); },
+    dispatchEvent(event) { for (const handler of listeners[event.type] ?? []) handler(event); },
+    setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; },
+  });
+  const palette = element({ hidden: true, "@aria-label": "Commands", replaceChildren(...rows) { this.rows = rows; } });
+  const nodes = {
+    "#prompt": prompt, "#prompt-form": element({ elements: { session: { value: "session" } } }), "#notice": element(),
+    "#controls": element(), "#feed": element(), "#scroll-feed": element(), "#send": element(), "#interrupt": element(),
+    "#attachments": element({ files: [] }), "#controls-body": element(), "#palette": palette,
+  };
+  runInNewContext(script, {
+    document: {
+      querySelector: selector => nodes[selector] ?? null, querySelectorAll: () => [],
+      body: { addEventListener() {} }, addEventListener() {},
+      createElement: () => element({ append() {} }),
+    },
+    location: { pathname: "/worker/w" },
+    sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    localStorage: { getItem: () => null, setItem() {} },
+    htmx: { process() {}, trigger() {} },
+    fetch: async (url, options) => {
+      requests.push({ url, headers: options.headers, body: String(options.body) });
+      return { ok: true, json: async () => [{ label: "main.go", text: "see @main.go ", cursor: 13 }] };
+    },
+    Event: class { constructor(type) { this.type = type; } },
+    URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval,
+  });
+  const fire = (name, extra = {}) => {
+    const event = { key: "", preventDefault() { this.prevented = true; }, ...extra };
+    for (const handler of listeners[name] ?? []) handler(event);
+    return event;
+  };
+  fire("input");
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(JSON.stringify(requests), JSON.stringify([{ url: "/worker/w/complete", headers: { "HX-Request": "true" }, body: "text=see+%40ma&cursor=7" }]));
+  assert.equal(palette.hidden, false);
+  assert.equal(palette.getAttribute("aria-label"), "Files");
+  assert.equal(palette.rows.length, 1);
+  assert.equal(fire("keydown", { key: "Enter" }).prevented, true);
+  assert.equal(prompt.value, "see @main.go ");
+  assert.equal(prompt.selectionStart, 13);
+  assert.equal(palette.hidden, true);
+  // Plain text never asks the server.
+  prompt.value = "see you";
+  prompt.selectionStart = prompt.selectionEnd = 7;
+  fire("input");
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(requests.length, 1);
+});

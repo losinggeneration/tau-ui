@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -565,6 +566,20 @@ func TestHTTPToCoordinator(t *testing.T) {
 			t.Fatalf("GET %s: %d, want %q without %q: %.2000s", check.path, w.Code, check.want, check.absent, body)
 		}
 	}
+	// Only the cursor's line goes to Tau, and cursors count UTF-16 units: "é" is
+	// one unit but two bytes, and "😀" is two units but four bytes.
+	w = request(http.MethodPost, "/worker/worker/complete", true, "http://example.com", url.Values{"text": {"first\né😀 @ma\nlast"}, "cursor": {"13"}})
+	var choices []pathChoice
+	if err := json.Unmarshal(w.Body.Bytes(), &choices); w.Code != 200 || err != nil {
+		t.Fatalf("complete: %d %v %s", w.Code, err, w.Body.String())
+	}
+	want := []pathChoice{
+		{Label: "main.go", Text: "first\né😀 @main.go \nlast", Cursor: 19},
+		{Label: "cmd/", Description: "folder", Text: "first\né😀 @cmd/\nlast", Cursor: 15},
+	}
+	if !reflect.DeepEqual(choices, want) {
+		t.Fatalf("complete: got %+v, want %+v", choices, want)
+	}
 	controlsPath := "/worker/worker/controls"
 	checkModels := func(w *httptest.ResponseRecorder, options ...string) {
 		t.Helper()
@@ -647,10 +662,11 @@ func TestHTTPToCoordinator(t *testing.T) {
 	case raw := <-commands:
 		var command struct {
 			Type string
-			Args map[string]string
+			Args map[string]any
 		}
 		if err := json.Unmarshal(raw, &command); err != nil || command.Type != "send_message" ||
-			command.Args["expected_session_id"] != "session" || command.Args["text"] != long || command.Args["streaming_behavior"] != "follow_up" {
+			command.Args["expected_session_id"] != "session" || command.Args["text"] != long || command.Args["streaming_behavior"] != "follow_up" ||
+			command.Args["expand_refs"] != true {
 			t.Fatalf("unexpected command %s: %v", raw, err)
 		}
 	default:
@@ -859,6 +875,11 @@ func fakeRPC(t *testing.T, link *coord.Link, commands chan<- json.RawMessage, mo
 				reply.Result = json.RawMessage(`{"type":"response","ok":true,"result":{"entries":[{"entry_id":"e1","role":"user","text":"First question"}]}}`)
 			case "get_commands":
 				reply.Result = json.RawMessage(`{"type":"response","ok":true,"result":{"commands":[{"name":"help","source":"builtin"},{"name":"skill:review","description":"Review code","source":"skill"}]}}`)
+			case "complete_path":
+				if string(cmd.Args["text"]) != `"é😀 @ma"` || string(cmd.Args["cursor"]) != "10" {
+					t.Errorf("complete_path got %s", f.Command)
+				}
+				reply.Result = json.RawMessage(`{"type":"response","ok":true,"result":{"prefix":"@ma","items":[{"value":"@main.go","label":"main.go"},{"value":"@cmd/","label":"cmd/","description":"folder"}]}}`)
 			case "get_last_assistant_text":
 				reply.Result = json.RawMessage(`{"type":"response","ok":true,"result":{"text":"Last reply"}}`)
 			case "compact":

@@ -556,6 +556,8 @@ document.body.addEventListener("promptAccepted", () => {
   if (promptBox && promptBox.value === submittedText) {
     promptBox.value = "";
     saveDraft();
+    if (palette) palette.hidden = true;
+    pathRequest++;
   }
   if (attachments && attachments.files === submittedFiles) {
     attachments.value = "";
@@ -859,32 +861,86 @@ async function loadCommands() {
 function updatePalette() {
   if (!palette) return;
   const match = /^\/(\S*)$/.exec(promptBox.value);
-  if (!match) { palette.hidden = true; return; }
-  loadCommands().then(() => { if (!palette.hidden || paletteMatches.length === 0) renderPalette(match[1]); });
-  renderPalette(match[1]);
+  if (!match) {
+    if (palette.getAttribute("aria-label") !== "Files") palette.hidden = true;
+    completePaths(true);
+    return;
+  }
+  completePaths(false);
+  loadCommands().then(() => { if (!palette.hidden || paletteMatches.length === 0) showCommands(match[1]); });
+  showCommands(match[1]);
 }
 
-function renderPalette(prefix) {
+function showCommands(prefix) {
   const query = prefix.toLowerCase();
-  paletteMatches = [...builtinCommands, ...(extraCommands ?? [])].filter(c => c.name.toLowerCase().startsWith(query));
-  paletteActive = Math.min(paletteActive, Math.max(paletteMatches.length - 1, 0));
-  palette.replaceChildren(...paletteMatches.map((command, i) => {
+  showPalette("Commands", [...builtinCommands, ...(extraCommands ?? [])]
+    .filter(c => c.name.toLowerCase().startsWith(query))
+    .map(command => ({ label: `/${command.name}`, hint: command.description, choose: () => runCommand(command) })));
+}
+
+// showPalette lists rows of { label, hint, choose } under the message box.
+function showPalette(name, rows) {
+  palette.setAttribute("aria-label", name);
+  paletteMatches = rows;
+  paletteActive = Math.min(paletteActive, Math.max(rows.length - 1, 0));
+  drawPalette();
+}
+
+function drawPalette() {
+  palette.replaceChildren(...paletteMatches.map((row, i) => {
     const item = document.createElement("li");
     item.role = "option";
     item.setAttribute("aria-selected", String(i === paletteActive));
     const name = document.createElement("span");
     name.className = "cmd-name";
-    name.textContent = `/${command.name}`;
+    name.textContent = row.label;
     const hint = document.createElement("span");
     hint.className = "row-hint";
-    hint.textContent = command.description ?? "";
+    hint.textContent = row.hint ?? "";
     item.append(name, hint);
     // Keep focus in the message box, but run only on a tap so dragging scrolls the list.
     item.addEventListener("mousedown", event => event.preventDefault());
-    item.addEventListener("click", () => runCommand(command));
+    item.addEventListener("click", () => row.choose());
     return item;
   }));
   palette.hidden = paletteMatches.length === 0;
+}
+
+// completePaths asks the instance for files matching the @path being typed.
+// The server returns each suggestion as the finished draft and cursor.
+let pathTimer;
+let pathRequest = 0;
+function completePaths(wanted) {
+  clearTimeout(pathTimer);
+  const request = ++pathRequest;
+  const cursor = promptBox.selectionStart;
+  const before = promptBox.value.slice(0, cursor);
+  if (!wanted || cursor !== promptBox.selectionEnd || !/(?:^|\s)@(?:"[^"]*|[^\s"]*)$/.test(before)) {
+    if (palette.getAttribute("aria-label") === "Files") palette.hidden = true;
+    return;
+  }
+  pathTimer = setTimeout(async () => {
+    const text = promptBox.value;
+    try {
+      const response = await fetch(promptBox.dataset.complete, {
+        method: "POST", headers: { "HX-Request": "true" },
+        body: new URLSearchParams({ text, cursor }),
+      });
+      const choices = response.ok ? await response.json() : [];
+      if (request !== pathRequest) return;
+      showPalette("Files", choices.map(choice => ({
+        label: choice.label, hint: choice.description === choice.label ? "" : choice.description, choose: () => { if (promptBox.value === text) choosePath(choice); },
+      })));
+    } catch { /* Typing the path by hand still works. */ }
+  }, 150);
+}
+
+// choosePath fires input so the draft saves and a chosen folder lists its files.
+function choosePath(choice) {
+  palette.hidden = true;
+  promptBox.value = choice.text;
+  promptBox.setSelectionRange(choice.cursor, choice.cursor);
+  promptBox.dispatchEvent(new Event("input"));
 }
 
 function runCommand(command) {
@@ -915,12 +971,13 @@ function paletteKey(event) {
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     event.preventDefault();
     paletteActive = (paletteActive + (event.key === "ArrowDown" ? 1 : count - 1)) % count;
-    renderPalette(promptBox.value.slice(1));
+    drawPalette();
   } else if ((event.key === "Enter" && !event.ctrlKey && !event.metaKey) || event.key === "Tab") {
     event.preventDefault();
-    runCommand(paletteMatches[paletteActive]);
+    paletteMatches[paletteActive].choose();
   } else if (event.key === "Escape") {
     palette.hidden = true;
+    pathRequest++;
   } else {
     return false;
   }

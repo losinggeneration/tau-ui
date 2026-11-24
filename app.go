@@ -528,7 +528,8 @@ func (a app) prompt(w http.ResponseWriter, r *http.Request) {
 			}
 			return err
 		}
-		args := map[string]any{"text": text, "expected_session_id": session, "streaming_behavior": behavior}
+		// expand_refs has the worker attach each @path from its own disk.
+		args := map[string]any{"text": text, "expected_session_id": session, "streaming_behavior": behavior, "expand_refs": true}
 		if len(ids) != 0 {
 			args["attachment_ids"] = ids
 		}
