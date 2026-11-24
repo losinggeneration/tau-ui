@@ -1455,15 +1455,32 @@ textarea.prompt,
 
 /* Keep narrower portrait screens in the one-pane layout. */
 @media (min-width: 56rem) and (orientation: landscape), (min-width: 72rem) {
+  /* The brand bar only spans the sidebar column; the workspace takes the
+     full height beside it. .layout dissolves so its panes join the body grid. */
   body {
     height: 100vh;
     height: 100dvh;
     overflow: hidden;
+    display: grid;
+    grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .layout {
-    grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
-    overflow: hidden;
+    display: contents;
+  }
+
+  .app-header {
+    grid-area: 1 / 1;
+    border-right: 1px solid var(--line);
+  }
+
+  .sidebar {
+    grid-area: 2 / 1;
+  }
+
+  .workspace {
+    grid-area: 1 / 2 / 3 / 3;
   }
 
   body.page-conversation .sidebar,
