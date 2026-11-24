@@ -18,6 +18,7 @@ import (
 
 	"github.com/losinggeneration/tau/ai"
 	"github.com/losinggeneration/tau/rpc/client"
+	"github.com/losinggeneration/tau/rpc/coord"
 	"github.com/losinggeneration/tau/sdk"
 )
 
@@ -109,6 +110,7 @@ type pickEntry struct {
 type controlsView struct {
 	ID, Session, Tab, Error, Notice string
 	State                           workerState
+	InstanceName                    string
 	Stats                           *sdk.SessionStats
 	// Model tab.
 	Models         []modelOption
@@ -238,6 +240,13 @@ func loadControls(ctx context.Context, c *client.CoordinatedClient, v *controlsV
 			return err
 		}
 		v.Stats = &stats
+		items, err := c.ListInstances(ctx)
+		if err != nil {
+			return err
+		}
+		if i := slices.IndexFunc(items, func(i coord.Instance) bool { return i.ID == v.ID }); i >= 0 {
+			v.InstanceName = items[i].Name
+		}
 	}
 	return nil
 }
@@ -373,6 +382,18 @@ func (a app) controlAction(w http.ResponseWriter, r *http.Request) {
 		}
 		// The command has no session guard, so check before renaming.
 		name, args, guard, v.Notice = "set_session_name", map[string]string{"name": strings.TrimSpace(value)}, true, "Renamed."
+	case "instance_name":
+		// An empty name clears it. The name belongs to the worker, so it
+		// needs no session guard.
+		clean, err := coord.NormalizeInstanceName(value)
+		if err != nil {
+			v.Error = fmt.Sprintf("Use one line of at most %d bytes for the instance name.", coord.MaxInstanceNameBytes)
+			break
+		}
+		name, value, v.Notice = action, clean, "Instance renamed."
+		if clean == "" {
+			v.Notice = "Instance name cleared."
+		}
 	case "compact":
 		// Compaction replies only once it finishes.
 		name, args, guard, timeout, v.Notice = "compact", map[string]string{"custom_instructions": value}, true, 10*time.Minute, "History compacted."
@@ -430,7 +451,12 @@ func (a app) controlAction(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			cctx, cancel := context.WithTimeout(ctx, timeout)
-			err := call(cctx, c, v.ID, name, args, nil)
+			var err error
+			if action == "instance_name" {
+				err = c.RenameInstance(cctx, v.ID, value)
+			} else {
+				err = call(cctx, c, v.ID, name, args, nil)
+			}
 			cancel()
 			switch {
 			case errors.Is(err, client.ErrOutcomeUnknown):
@@ -466,12 +492,16 @@ func (a app) controlAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if v.Error == "" {
 		trigger := "conversationRefresh"
-		if action == "name" {
+		if action == "name" || action == "instance_name" {
 			trigger += ", instanceListRefresh"
 		}
 		w.Header().Set("HX-Trigger", trigger)
 	}
 	if inline {
+		// A card shows its result in the list, so only a failure needs a notice.
+		if f.Get("inline") == "card" {
+			v.Notice = ""
+		}
 		render(w, "notice", notice{Text: cmp.Or(v.Error, v.Notice), Error: v.Error != ""})
 		return
 	}

@@ -118,7 +118,7 @@ func restartWorker(ctx context.Context, c *client.CoordinatedClient, target coor
 	if err := waitExit(stopCtx, c, target.ID); err != nil {
 		return nil, fmt.Errorf("Tau accepted the restart, but the worker hasn't exited yet (%v). Session %s was not resumed; check the instance list before opening it.", err, target.SessionID)
 	}
-	inst, err := c.StartSavedSession(ctx, target.CWD, target.SessionID)
+	inst, err := c.StartNamedSavedSession(ctx, target.CWD, target.SessionID, target.Name)
 	if errors.Is(err, client.ErrOutcomeUnknown) {
 		// Don't wrap: result would replace this with the generic notice.
 		return nil, fmt.Errorf("The worker stopped, but Tau may or may not have resumed session %s. Check the instance list before trying again. Nothing was resent.", target.SessionID)

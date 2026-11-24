@@ -59,9 +59,10 @@ type instance struct {
 	Active, Restart, Dismissed bool
 }
 
-// DisplayName is the session name, or the project directory without one.
+// DisplayName is the instance name, then the session name, then the project
+// directory.
 func (i instance) DisplayName() string {
-	return cmp.Or(i.SessionName, projectName(i.CWD))
+	return cmp.Or(i.Name, i.SessionName, projectName(i.CWD))
 }
 
 // Running reports whether a restart could interrupt a run. An unknown state
@@ -207,7 +208,7 @@ type pageView struct {
 
 // DisplayName names the open conversation.
 func (v pageView) DisplayName() string {
-	return cmp.Or(v.Registry.Current.SessionName, projectName(v.CWD))
+	return cmp.Or(v.Registry.Current.Name, v.Registry.Current.SessionName, projectName(v.CWD))
 }
 
 func (a app) page(w http.ResponseWriter, r *http.Request) {

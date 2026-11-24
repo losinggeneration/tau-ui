@@ -493,6 +493,19 @@ function refreshStaleList() {
   htmx.trigger(document.body, "instanceListRefresh");
 }
 
+// A native prompt survives the list refresh that would replace an inline field.
+document.body.addEventListener("htmx:confirm", event => {
+  const form = event.detail.elt;
+  if (!form?.matches?.("[data-rename]")) return;
+  const field = form.elements.value;
+  const name = prompt(`Rename ${form.dataset.rename}. Leave empty to clear its name.`, field.value);
+  if (name === null || name.trim() === field.value) {
+    event.preventDefault();
+    return;
+  }
+  field.value = name;
+});
+
 document.body.addEventListener("htmx:beforeRequest", event => {
   const button = event.detail.elt?.closest?.(".instance-card form")?.querySelector("[data-busy-label]");
   if (!button || event.defaultPrevented) return;
@@ -688,7 +701,7 @@ function directAction(action, value = "", busy = "") {
   const restore = () => {
     if (busy) setProgress(action);
     if (value && !promptBox.value && !notice.querySelector(".success")) {
-      promptBox.value = `/${action} ${value}`;
+      promptBox.value = `/${action.replaceAll("_", "-")} ${value}`;
       saveDraft();
     }
   };
@@ -817,6 +830,7 @@ const builtinCommands = [
   { name: "fork", description: "Fork from a message", run: () => openControls("session", () => htmx.ajax("GET", `${location.pathname}/controls/pick?kind=fork&session=${encodeURIComponent(composer.elements.session.value)}`, { target: controlsBody })) },
   { name: "forget", description: "Drop messages from a picked point onward", run: () => openControls("session", () => htmx.ajax("GET", `${location.pathname}/controls/pick?kind=forget&session=${encodeURIComponent(composer.elements.session.value)}`, { target: controlsBody })) },
   { name: "name", description: "Name this session", args: true, run: text => text ? directAction("name", text) : openControls("session") },
+  { name: "instance-name", description: "Name this instance", args: true, run: text => text ? directAction("instance_name", text) : openControls("session") },
   { name: "copy", description: "Copy the last reply", run: () => { const b = document.createElement("button"); b.dataset.copyReply = `${location.pathname}/last-reply`; copyLastReply(b).then(() => { const copied = b.textContent === "Copied"; toast(copied ? "Copied the last reply." : "Couldn't copy the last reply.", !copied); }); } },
   { name: "export", description: "Download the session as HTML", run: () => { location.href = `${location.pathname}/export`; } },
   { name: "reload", description: "Reload plugins and resources", run: () => directAction("reload") },

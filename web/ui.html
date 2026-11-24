@@ -186,6 +186,7 @@
 
 {{define "instance-preview"}}
   <div class="instance-main"><span class="instance-name">{{.DisplayName}}</span>{{if and .Outdated (ne .LinkState "exited") (not .Updatable)}}<span class="instance-outdated" role="img" aria-label="Out of date" title="Running an older Tau build. It can't be restarted from here right now.">⚠︎</span>{{end}}<span class="badge" data-state="{{.Badge}}" title="{{.Label}}"><span class="badge-label">{{.Label}}</span></span></div>
+  {{if and .Name .SessionName (ne .Name .SessionName)}}<span class="instance-path" title="Session: {{.SessionName}}">{{.SessionName}}</span>{{end}}
   {{if .CWD}}<span class="instance-path" title="{{.CWD}}">{{.CWD}}</span>{{end}}
   {{if .FirstPrompt}}<span class="preview">{{.FirstPrompt}}</span>{{end}}
 {{end}}
@@ -205,8 +206,15 @@
       <button class="quiet" type="submit" aria-label="Out of date. Restart {{.DisplayName}} on the current Tau build" title="Out of date. Restart on the current Tau build." data-busy-label="Restarting…">⚠︎ ⟳</button>
     </form>
     {{end}}
-    {{if and .SessionID (ne .Badge "offline")}}
+    {{if ne .Badge "offline"}}
     <fieldset class="instance-actions" aria-label="Actions for {{.DisplayName}}" hx-sync="closest .instance-card:drop" hx-target="#lifecycle-notice" hx-swap="beforeend" hx-disabled-elt="closest fieldset">
+      <form method="post" hx-post="/worker/{{.ID}}/controls" data-rename="{{.DisplayName}}">
+        <input type="hidden" name="action" value="instance_name">
+        <input type="hidden" name="inline" value="card">
+        <input type="hidden" name="value" value="{{.Name}}">
+        <button class="quiet" type="submit" aria-label="Rename {{.DisplayName}}" data-busy-label="Renaming…">Rename</button>
+      </form>
+      {{if .SessionID}}
       {{if and (eq .Badge "limited") (not .Dismissed)}}
       <form method="post" hx-post="/worker/{{.ID}}/dismiss-limit">
         <input type="hidden" name="limit" value="{{.Limit}}">
@@ -226,6 +234,7 @@
         <input type="hidden" name="op" value="restart">
         <button class="quiet" type="submit" aria-label="Restart {{.DisplayName}}" data-busy-label="Restarting…">Restart</button>
       </form>
+      {{end}}
       {{end}}
     </fieldset>
     {{end}}
@@ -427,7 +436,14 @@
 </div>
 {{end}}
 
-<h3 class="group-title">Name</h3>
+<h3 class="group-title">Instance name</h3>
+<form class="inline-form" hx-post="/worker/{{.ID}}/controls" hx-target="#controls-body" hx-disabled-elt="find button">
+  {{template "control-hidden" .}}<input type="hidden" name="action" value="instance_name">
+  <input name="value" aria-label="Instance name" placeholder="Name this instance" value="{{.InstanceName}}" autocomplete="off">
+  <button class="quiet">Save</button>
+</form>
+
+<h3 class="group-title">Session name</h3>
 <form class="inline-form" hx-post="/worker/{{.ID}}/controls" hx-target="#controls-body" hx-disabled-elt="find button">
   {{template "control-hidden" .}}<input type="hidden" name="action" value="name">
   <input name="value" aria-label="Session name" placeholder="Name this session" value="{{.State.Name}}" autocomplete="off">

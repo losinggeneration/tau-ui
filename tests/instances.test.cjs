@@ -6,7 +6,7 @@ const { runInNewContext } = require("node:vm");
 
 const script = readFileSync(join(__dirname, "../web/ui.js"), "utf8");
 
-function harness() {
+function harness(promptReply) {
   const handlers = {};
   const refreshes = [];
   const notice = {
@@ -28,6 +28,7 @@ function harness() {
   runInNewContext(script, {
     document,
     htmx: { trigger: (_, name) => refreshes.push(name) },
+    prompt: () => promptReply,
     localStorage: { getItem: () => null, setItem() {} },
     sessionStorage: { getItem: () => null, setItem() {} },
   });
@@ -120,4 +121,17 @@ test("a new click keeps errors from restarts in the same batch", () => {
 
   fire("htmx:beforeRequest", card().detail);
   assert.equal(notice.textContent, "");
+});
+
+test("renaming from a card sends the new name and skips a cancelled or unchanged one", () => {
+  const confirm = reply => {
+    const { fire } = harness(reply);
+    const value = { value: "Old" };
+    const elt = { matches: selector => selector === "[data-rename]", dataset: { rename: "Old" }, elements: { value } };
+    return { blocked: fire("htmx:confirm", { elt }).defaultPrevented, sent: value.value };
+  };
+  assert.deepEqual({ ...confirm("New") }, { blocked: false, sent: "New" });
+  assert.deepEqual({ ...confirm("") }, { blocked: false, sent: "" });
+  assert.equal(confirm(null).blocked, true);
+  assert.equal(confirm(" Old ").blocked, true);
 });
