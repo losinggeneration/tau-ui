@@ -2,9 +2,13 @@
 
 Tau UI is a standalone, phone-first web client for `tau daemon`. It uses Go templates and HTMX for the instance list, conversation, and forms. It doesn't serve or use Tau's bundled web interface, and it doesn't need Node.js or an Android SDK to run.
 
+## Scope
+
+Tau UI is a personal project. I wrote it for my own use, and I have no desire to turn it into a community project. Fork it and modify it however you want. The [Universal Permissive License](LICENSE) allows that, but expect the design to follow my needs, not contributions or feature requests.
+
 ## Run locally
 
-1. Check out `tau` alongside this repo as `../tau`. Tau UI uses the [coordinated Go client](../tau/rpc/client/coordinated.go) from that checkout. The integration was developed against Tau revision `e2d37ca` with Go 1.26.6 or newer.
+1. Check out `tau` alongside this repo as `../tau`. Tau UI uses the [coordinated Go client](../tau/rpc/client/coordinated.go) from that checkout. The integration targets Tau revision `e2d37ca` and needs Go 1.26.6 or newer.
 2. If your user doesn't already have a running coordinator, start `tau daemon` on the host. Use a build that supports coordinated instances. You don't need the daemon's `--websocket` flag.
 3. From this repo, set a strong UI password and start the app:
 
@@ -47,7 +51,7 @@ The standalone window hides Firefox's address bar without changing Tau UI's layo
 
 ## What you can do
 
-- Pick up work from the **Instances** sidebar. Instances are grouped by state, and a group appears only when it has an instance:
+- Pick up work from the **Instances** sidebar. Tau UI groups instances by state, and a group appears only when it has an instance:
   - **Needs attention**: a failed run, a state Tau UI doesn't recognize, or a new usage limit. Select **Dismiss** on a usage limit to move it to **Waiting**. It stays there across retries and Tau UI restarts until the run ends or hits a limit from another provider. Tau UI stores dismissals in `$XDG_STATE_HOME/tau-ui/dismissed-limits.json`, or `~/.local/state/tau-ui/dismissed-limits.json` if `XDG_STATE_HOME` isn't set.
   - **Needs input**: the run finished, or Tau is waiting on a dialog.
   - **Working**: running or retrying after a provider error.
@@ -56,20 +60,20 @@ The standalone window hides Firefox's address bar without changing Tau UI's layo
   - **Done**: exited workers that Tau still has in its registry. This group starts collapsed.
 
   Your browser remembers whether you leave **Working** and **Waiting** open.
-- Use **Rename**, **Stop**, or **Restart** on an instance card. Clear the name in **Rename** to go back to the session or project name. On a narrow screen, tap **Instances** to open the full-screen list. Restart resumes the same session and requires a daemon that supports session-preserving restart. Other open tabs and devices follow the restart to the new instance and keep their unsent message and attachments. A worker running an older Tau build shows **⚠ ⟳** next to its status. Select it to restart that worker on the current build; Tau UI asks first if the worker may have a run in progress.
+- Use **Rename**, **Stop**, or **Restart** on an instance card. Clear the name in **Rename** to go back to the session or project name. On a narrow screen, tap **Instances** to open the full-screen list. Restart resumes the same session and requires a daemon that supports session-preserving restart. Other open tabs and devices follow the restart to the new instance and keep their unsent message and attachments. A worker running an older Tau build shows **⚠ ⟳** next to its status. Select it to restart that worker on the current build. Tau UI asks first if the worker may have a run in progress.
 - Read Markdown messages with syntax-highlighted fenced code. Tau UI renders both on the server and sends HTML fragments to HTMX. Tool runs have their own rows in the transcript. Expand a row to see its arguments and output or live progress. Images you send appear inline in your message.
 - Send a prompt, queue a follow-up, interrupt a run, or answer a pending input request. In the message box, press **Control+Enter** (**Command+Enter** on macOS) to send. **Enter** inserts a newline. When Tau is working, **Send** steers the current turn and **Follow up** queues a later message.
-- Open **Queued messages** above the composer to see waiting follow-ups and steering messages. Select **Edit** to change one pending message, or **Edit all** to change them together. Edits keep each message’s queue position and attachments. Tau pauses the whole queue while the editor is open, then resumes it when you save or cancel. If the page closes during an edit, the queue stays paused until you select **Resume**. Workers built before queue controls can still edit text but can't pause; workers that report counts only can't edit. Rebuild Tau and replace those workers to enable both.
+- Open **Queued messages** above the composer to see waiting follow-ups and steering messages. Select **Edit** to change one pending message, or **Edit all** to change them together. Edits keep each message's queue position and attachments. Tau pauses the whole queue while the editor is open, then resumes it when you save or cancel. If the page closes during an edit, the queue stays paused until you select **Resume**. Workers built before queue controls can still edit text but can't pause. Workers that only report counts can't edit. Rebuild Tau and replace those workers to enable both.
 - Select **Attach files** or paste a screenshot into the composer. To take a file out before sending, select **Remove** next to its name. Tau UI hands each file to Tau through a temporary file on the host, so only Tau's own rules apply to attachments. Message text must fit Tau's 1 MiB message limit; attach longer text as a file. Clipboard image paste depends on the browser.
 - Change the session from the conversation. The chip at the top right shows the model, thinking level, and how full the context is. Select the chip, or **⋯** next to **Send**, to open the controls:
-  - **Session**: context, cost, and message count; rename the instance or session; auto-compaction, auto-retry, and how queued messages are delivered; compact the history, retry the last run, copy the last reply, export the session as HTML, fork or forget from a message, reload plugins, or start a new session.
+  - **Session**: context, cost, and message count. Rename the instance or session. Set auto-compaction, auto-retry, and how queued messages are delivered. Compact the history, retry the last run, copy the last reply, export the session as HTML, fork or forget from a message, reload plugins, or start a new session.
   - **Model**: thinking level and the model, with search and your scoped models.
   - **History**: resume, pin, or unpin a saved session.
   - **Tools**: turn MCP servers and plugins on or off, reconnect a server, or sign in to one. A sign-in link appears in the conversation as an input request.
 
-  Type **/** in the message box to pick a command. Commands that need no extra UI, such as `/compact`, `/retry`, and `/new`, run when you send them, and text after `/compact` becomes its instructions. Commands with choices, such as `/model`, open the matching control. Skill, prompt, and plugin commands from Tau are added to the message so you can type their arguments. Session settings apply to the current session and reset when you start or resume another. Some controls need a Tau build that reports them; older workers show a note instead.
-- Type **@** in the message box to refer to a file or folder in the instance's project. Tau UI asks the instance for matching paths as you type. Select a folder to keep going into it, or a file to finish. When you send the message, the instance attaches each `@path` from its own disk, and a folder becomes a reference to its path. A path that doesn't exist stays as plain text. Paths are relative to the instance's working directory. You can also use `~/` or an absolute path. Suggestions and attaching need a Tau build from `d5fcb83` or later; on older workers, `@` text is sent as typed.
-- Resume updates after a dropped connection. The conversation refreshes about once a second while visible. When a message, command, or output is too long for a refresh, Tau UI shows a preview. Select **Show full content** to load the rest into that message. The app keeps unsent text in the current browser tab and clears the composer only after Tau acknowledges the send. It doesn't automatically retry sends.
+  Type **/** in the message box to pick a command. Commands that need no extra UI, such as `/compact`, `/retry`, and `/new`, run when you send them, and text after `/compact` becomes its instructions. Commands with choices, such as `/model`, open the matching control. Tau adds skill, prompt, and plugin commands to the message so you can type their arguments. Session settings apply to the current session and reset when you start or resume another. Some controls need a Tau build that reports them; older workers show a note instead.
+- Type **@** in the message box to refer to a file or folder in the instance's project. Tau UI asks the instance for matching paths as you type. Select a folder to keep going into it, or a file to finish. When you send the message, the instance attaches each `@path` from its own disk, and a folder becomes a reference to its path. A path that doesn't exist stays as plain text. Paths are relative to the instance's working directory. You can also use `~/` or an absolute path. Suggestions and attaching need a Tau build from `d5fcb83` or later. On older workers, Tau UI sends `@` text as typed.
+- Tau UI resumes updates after a dropped connection. The conversation refreshes about once a second while visible. When a message, command, or output is too long for a refresh, Tau UI shows a preview. Select **Show full content** to load the rest into that message. The app keeps unsent text in the current browser tab and clears the composer only after Tau acknowledges the send. It doesn't automatically retry sends.
 
 Tau UI sees coordinator-managed instances, not standalone Tau processes. To resume a saved session, use **History** in the controls of an instance in the same project. HTMX 2.0.10 is [vendored with its license](web/htmx.LICENSE).
 
@@ -83,3 +87,7 @@ go vet ./...
 If Node.js is available, run `node --test tests/composer.test.cjs` to check the keyboard shortcut.
 
 The integration test exercises the HTTP app against a fake coordinator on a Unix socket. On a physical phone, check that the composer stays usable with the keyboard open, and that a reply continues updating after you lock and unlock the phone.
+
+## License
+
+Tau UI is licensed under the [Universal Permissive License (UPL), Version 1.0](LICENSE), the same license as Tau.
