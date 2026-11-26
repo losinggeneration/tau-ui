@@ -43,7 +43,7 @@ func (n *nameCoordinator) serve(t *testing.T, link *coord.Link) {
 	if err != nil {
 		return
 	}
-	ops := []string{coord.OperationInstanceRename, coord.OperationInstanceRestart, coord.OperationSavedSessionLaunch}
+	ops := []string{coord.OperationInstanceRename, coord.OperationSavedSessionLaunch}
 	if link.Send(coord.Frame{Type: coord.TypeWelcome, Version: coord.Version, Role: coord.RoleClient, ClientID: hello.ClientID, Operations: ops}) != nil {
 		return
 	}

@@ -755,7 +755,7 @@ func fakeRPC(t *testing.T, link *coord.Link, commands chan<- json.RawMessage, mo
 		t.Error(err)
 		return
 	}
-	if err := link.Send(coord.Frame{Type: coord.TypeWelcome, Version: coord.Version, Role: coord.RoleClient, ClientID: hello.ClientID, Operations: []string{coord.OperationInstanceRestart, coord.OperationSavedSessionLaunch}}); err != nil {
+	if err := link.Send(coord.Frame{Type: coord.TypeWelcome, Version: coord.Version, Role: coord.RoleClient, ClientID: hello.ClientID, Operations: []string{coord.OperationSavedSessionLaunch}}); err != nil {
 		t.Error(err)
 		return
 	}

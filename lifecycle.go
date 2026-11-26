@@ -26,8 +26,7 @@ const (
 // restartSupported reports whether c's coordinator can stop a worker while
 // keeping its session and then launch that saved session again.
 func restartSupported(c *client.CoordinatedClient) bool {
-	ops := c.Welcome().Operations
-	return slices.Contains(ops, coord.OperationInstanceRestart) && slices.Contains(ops, coord.OperationSavedSessionLaunch)
+	return slices.Contains(c.Welcome().Operations, coord.OperationSavedSessionLaunch)
 }
 
 // lifecycle stops or restarts one worker. No step is retried: a mutation
