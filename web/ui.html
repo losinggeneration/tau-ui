@@ -19,7 +19,7 @@
     <aside class="sidebar" aria-label="Instances">
       <div class="sidebar-heading"><h1>Instances</h1></div>
       <div id="lifecycle-notice" class="notice" role="status"></div>
-      <div id="instance-list" class="instance-list" hx-get="/instances?active={{.ID}}" hx-trigger="every 5s, instanceListRefresh from:body" hx-sync="this:abort">
+      <div id="instance-list" class="instance-list" hx-get="/instances?active={{.ID}}" hx-trigger="every 30s, instanceListRefresh from:body" hx-sync="this:abort">
         {{template "instances" .Registry}}
       </div>
       <details class="start-panel">
@@ -56,7 +56,7 @@
           {{if and .Before .Session}}{{template "history" (historyLink .ID .Session .Before)}}{{end}}
             <div class="messages" id="recent"></div>
           </div>
-          <div id="feed" hx-get="/worker/{{.ID}}/feed?session={{.Session}}" hx-trigger="every 1s, conversationRefresh from:body">
+          <div id="feed" hx-get="/worker/{{.ID}}/feed?session={{.Session}}" hx-trigger="every 30s, conversationRefresh from:body">
             {{template "feed" .Feed}}
           </div>
         </div>

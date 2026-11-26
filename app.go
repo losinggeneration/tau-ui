@@ -29,6 +29,7 @@ type app struct {
 	socket      string
 	inbox       *inboxOrder
 	restarts    *restartWatch
+	hub         *eventHub
 	projectRoot string
 }
 

@@ -156,7 +156,9 @@ func serve(ctx context.Context, addr, tlsCert, tlsKey, socket, password, project
 }
 
 func newApp(ctx context.Context, socket, password, projectRoot string, caCert []byte) http.Handler {
-	a := app{socket: socket, inbox: new(inboxOrder), restarts: newRestartWatch(), projectRoot: projectRoot}
+	hub := newEventHub()
+	a := app{socket: socket, inbox: &inboxOrder{hub: hub}, restarts: newRestartWatch(), hub: hub, projectRoot: projectRoot}
+	a.restarts.hub = hub
 	if path, err := dismissalsPath(); err != nil {
 		log.Printf("find dismissed usage limits: %v", err)
 	} else {
@@ -167,6 +169,7 @@ func newApp(ctx context.Context, socket, password, projectRoot string, caCert []
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", a.page)
 	mux.HandleFunc("GET /instances", a.instances)
+	mux.HandleFunc("GET /events", a.events)
 	mux.HandleFunc("GET /worker/{id}", a.page)
 	mux.HandleFunc("GET /worker/{id}/feed", a.feed)
 	mux.HandleFunc("GET /worker/{id}/history", a.history)

@@ -31,6 +31,7 @@ type restartWatch struct {
 	viewed     map[string]time.Time // last feed poll
 	restarting map[string]time.Time // announcement expiry
 	wake       chan struct{}
+	hub        *eventHub
 }
 
 func newRestartWatch() *restartWatch {
@@ -135,6 +136,9 @@ func (t *restartWatch) watch(parent context.Context, socket string) {
 		case f, ok := <-c.Events():
 			if !ok {
 				return
+			}
+			if f.InstanceID != "" {
+				t.hub.publish(eventConversation, f.InstanceID)
 			}
 			if f.Type != coord.TypeInstanceReplacement {
 				continue

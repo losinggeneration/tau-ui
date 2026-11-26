@@ -39,6 +39,7 @@ type inboxOrder struct {
 	// dismissed is keyed by session so it survives worker and Tau UI restarts.
 	dismissed     map[string]limitDismissal
 	dismissedPath string
+	hub           *eventHub
 }
 
 // limitDismissal records that the user moved a session's usage limit to Waiting.
@@ -251,6 +252,7 @@ func (o *inboxOrder) watch(ctx context.Context, socket string) {
 	}
 	o.baseline(c.Generation(), items)
 	defer o.baseline("", nil)
+	o.hub.publish(eventInstances, "") // catch up on changes missed while disconnected
 	for {
 		select {
 		case <-ctx.Done():
@@ -262,6 +264,8 @@ func (o *inboxOrder) watch(ctx context.Context, socket string) {
 			if f.Type != coord.TypeInstanceUpdate {
 				continue
 			}
+			o.hub.publish(eventInstances, "")
+			o.hub.publish(eventConversation, f.InstanceID) // the heading shows its state
 			o.mu.Lock()
 			if f.Instance == nil {
 				delete(o.entries, f.InstanceID)

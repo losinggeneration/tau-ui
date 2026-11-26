@@ -370,9 +370,30 @@ function followInstance(id) {
     }
   }
   htmx.process(document.body);
+  listenForChanges();
   htmx.trigger(document.body, "instanceListRefresh");
   htmx.trigger(document.body, "conversationRefresh");
 }
+
+// The server says when something changed, and the page refetches it. The slow
+// polls in the page stay as a backstop for a dropped stream.
+let changes = null;
+function listenForChanges() {
+  changes?.close();
+  const worker = location.pathname.startsWith("/worker/") ? location.pathname.slice("/worker/".length) : "";
+  changes = new EventSource(`/events?worker=${worker}`);
+  const refresh = name => () => htmx.trigger(document.body, name);
+  changes.addEventListener("instances", refresh("instanceListRefresh"));
+  changes.addEventListener("conversation", refresh("conversationRefresh"));
+  // Catch up on anything missed while the stream was down.
+  let opened = false;
+  changes.addEventListener("open", () => {
+    if (!opened) return void (opened = true);
+    htmx.trigger(document.body, "instanceListRefresh");
+    htmx.trigger(document.body, "conversationRefresh");
+  });
+}
+listenForChanges();
 
 function requestError(event) {
   const source = event.detail.elt;
