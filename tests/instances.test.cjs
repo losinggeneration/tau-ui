@@ -27,6 +27,8 @@ function harness(promptReply) {
   };
   runInNewContext(script, {
     document,
+    location: { pathname: "/worker/w" },
+    EventSource: class { addEventListener() {} close() {} },
     htmx: { trigger: (_, name) => refreshes.push(name) },
     prompt: () => promptReply,
     localStorage: { getItem: () => null, setItem() {} },

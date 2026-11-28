@@ -604,6 +604,12 @@ document.body.addEventListener("htmx:afterRequest", event => {
   if (event.detail.successful && source?.closest(".mutation") && !source.closest(".start-panel")) {
     htmx.trigger(document.body, "conversationRefresh");
   }
+  // A redirected action (new, resume, fork) swaps the page for a fresh one,
+  // which drops focus. Leave a marker so the next load puts it back.
+  if (event.detail.xhr?.getResponseHeader?.("HX-Redirect")) {
+    try { sessionStorage.setItem("tau-ui:focus-prompt", "1"); }
+    catch { /* The browser can disable storage. */ }
+  }
 });
 
 document.body.addEventListener("htmx:beforeSwap", event => {
@@ -648,10 +654,8 @@ document.body.addEventListener("htmx:beforeSwap", event => {
 
 document.body.addEventListener("htmx:afterSwap", event => {
   if (instances && event.detail.target === instances) restoreInstanceGroups();
-});
-
-document.body.addEventListener("htmx:afterSettle", event => {
-  if (event.detail.target === feed) {
+  else if (event.detail.target === feed) {
+    // Restore before the browser paints, so reopeners never flash closed.
     const rows = reconcileRows();
     for (const key of openExecutions) {
       const detail = rows.get(key)?.querySelector("details");
@@ -671,9 +675,12 @@ document.body.addEventListener("htmx:afterSettle", event => {
     }
     lastScrollTop = viewport.scrollTop;
     swappingFeed = false;
-  } else if (event.detail.target?.matches?.("[data-full]")) {
-    stopFollowingIfExpanded();
-  } else if (oldHeight !== undefined && event.detail.elt?.closest?.("#archive")) {
+  }
+});
+
+document.body.addEventListener("htmx:afterSettle", event => {
+  if (event.detail.target?.matches?.("[data-full]")) stopFollowingIfExpanded();
+  else if (oldHeight !== undefined && event.detail.elt?.closest?.("#archive")) {
     reconcileRows();
     viewport.scrollTop += viewport.scrollHeight - oldHeight;
     oldHeight = undefined;
@@ -1008,3 +1015,13 @@ if (controls) applyMeters();
 syncComposer();
 showUsageWait();
 bottom();
+// A redirected action replaced the page and left a marker behind, so put
+// focus back in the message box where it was before /new, /resume, or /fork.
+if (promptBox) {
+  try {
+    if (sessionStorage.getItem("tau-ui:focus-prompt")) {
+      sessionStorage.removeItem("tau-ui:focus-prompt");
+      promptBox.focus({preventScroll: true});
+    }
+  } catch { /* The browser can disable storage. */ }
+}

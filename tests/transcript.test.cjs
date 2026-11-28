@@ -42,6 +42,8 @@ test("a result-only refresh keeps the live command header and its position", () 
       body: { addEventListener: (event, handler) => handlers[event] = handler },
       addEventListener() {},
     },
+    location: { pathname: "/worker/w" },
+    EventSource: class { addEventListener() {} close() {} },
   };
   runInNewContext(script, context);
   handlers["htmx:beforeSwap"]({ detail: { target: feed, shouldSwap: true, serverResponse: "new result" } });
@@ -75,6 +77,8 @@ test("the transcript follows from the bottom until scrolled up past 5% of its he
       body: { addEventListener: (name, handler) => (handlers[name] ??= []).push(handler) },
       addEventListener() {},
     },
+    location: { pathname: "/worker/w" },
+    EventSource: class { addEventListener() {} close() {} },
   };
   runInNewContext(script, context);
   runInNewContext("syncQueue = () => {}", context);
@@ -83,7 +87,7 @@ test("the transcript follows from the bottom until scrolled up past 5% of its he
     const detail = { target: feed, shouldSwap: true, serverResponse: `update ${++response}` };
     handlers["htmx:beforeSwap"].forEach(handler => handler({ detail }));
     viewport.scrollHeight += growth;
-    handlers["htmx:afterSettle"].forEach(handler => handler({ detail }));
+    handlers["htmx:afterSwap"].forEach(handler => handler({ detail }));
     listeners.scroll();
   };
   const scrollTo = distance => {
@@ -135,6 +139,8 @@ test("a usage-limit wait counts down, then holds at retrying now", () => {
       body: { addEventListener() {} },
       addEventListener() {},
     },
+    location: { pathname: "/worker/w" },
+    EventSource: class { addEventListener() {} close() {} },
   };
   runInNewContext(script, context);
   assert.equal(span.textContent, "retrying in 1h 1m 1s");
@@ -176,6 +182,7 @@ test("the image viewer opens, zooms only oversized images, and closes on the bac
     },
     window: { addEventListener() {} }, localStorage: { getItem: () => null, setItem() {} },
     location: { pathname: "/", search: "" }, requestAnimationFrame() {}, setTimeout() {}, setInterval() {},
+    EventSource: class { addEventListener() {} close() {} },
     addEventListener() {}, CSS: { escape: value => value },
   });
   const click = (target, clientX = 10, clientY = 10) => listeners.click.forEach(handler => handler({ target, clientX, clientY }));

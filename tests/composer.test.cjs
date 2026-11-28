@@ -17,6 +17,8 @@ test("composer shortcut activates Send without changing plain Enter", () => {
       body: { addEventListener() {} },
       addEventListener() {},
     },
+    location: { pathname: "/worker/w" },
+    EventSource: class { addEventListener() {} close() {} },
   });
   function press(overrides = {}) {
     let prevented = false;
@@ -36,7 +38,7 @@ test("composer shortcut activates Send without changing plain Enter", () => {
   assert.equal(clicks, 2);
 });
 
-function composerHarness(text) {
+function composerHarness(text, store = new Map()) {
   const handlers = {};
   const posts = [];
   const element = extra => ({
@@ -44,7 +46,7 @@ function composerHarness(text) {
     setAttribute() {}, matches: () => false, closest: () => null, dataset: {}, ...extra,
   });
   const notice = element({ textContent: "" });
-  const prompt = element({ value: text, focus() {} });
+  const prompt = element({ value: text, focus(...args) { (this.focuses ??= []).push(args); } });
   const composer = element({ elements: { session: { value: "session" } } });
   const controls = element({ open: false, showModal() { this.open = true; } });
   const nodes = {
@@ -59,8 +61,9 @@ function composerHarness(text) {
       addEventListener() {},
     },
     location: { pathname: "/worker/w" },
-    sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    sessionStorage: { getItem: key => store.get(key) ?? null, setItem: (key, value) => store.set(key, value), removeItem: key => store.delete(key) },
     localStorage: { getItem: () => null, setItem() {} },
+    EventSource: class { addEventListener() {} close() {} },
     htmx: { process() {}, trigger() {}, ajax: (method, url, options) => { posts.push({ method, url, ...options }); return Promise.resolve(); } },
     setTimeout, clearTimeout, setInterval, clearInterval,
   });
@@ -71,8 +74,28 @@ function composerHarness(text) {
     }
     return prevented;
   };
-  return { controls, notice, posts, prompt, send };
+  return { controls, notice, posts, prompt, send, handlers };
 }
+
+test("a redirected command leaves a marker, and the fresh page focuses the message box", () => {
+  const store = new Map();
+  // /new answers with an HX-Redirect, so the whole page is replaced and focus drops.
+  const before = composerHarness("/new", store);
+  before.handlers["htmx:afterRequest"].forEach(handler => {
+    handler({ detail: { elt: null, xhr: { getResponseHeader: name => name === "HX-Redirect" ? "/worker/next" : null } } });
+  });
+  assert.equal(store.get("tau-ui:focus-prompt"), "1");
+  assert.equal(before.prompt.focuses, undefined);
+
+  // The page after the redirect consumes the marker and refocuses the message box.
+  const after = composerHarness("", store);
+  assert.deepEqual(after.prompt.focuses?.map(args => args.map(option => ({ ...option }))), [[{ preventScroll: true }]]);
+  assert.equal(store.has("tau-ui:focus-prompt"), false);
+
+  // A plain load keeps focus where it was.
+  const plain = composerHarness("", new Map());
+  assert.equal(plain.prompt.focuses, undefined);
+});
 
 test("sending a direct command runs it without opening the controls", () => {
   for (const [text, action, value] of [["/compact", "compact", ""], ["/compact keep the API notes", "compact", "keep the API notes"], ["/retry", "retry", ""], ["/new", "new", ""], ["/reload", "reload", ""]]) {
@@ -133,6 +156,8 @@ function toastHarness({ saved = null, narrow = false } = {}) {
       createElement: element, body: { addEventListener() {} }, addEventListener() {},
     },
     localStorage: { getItem: () => saved, setItem() {} },
+    location: { pathname: "/worker/w" },
+    EventSource: class { addEventListener() {} close() {} },
     matchMedia: () => ({ matches: narrow }),
     MutationObserver: class { observe() {} },
     setTimeout: fn => timers.push(fn),
@@ -210,6 +235,7 @@ test("typing @ offers the instance's files and applies the chosen one", async ()
     location: { pathname: "/worker/w" },
     sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     localStorage: { getItem: () => null, setItem() {} },
+    EventSource: class { addEventListener() {} close() {} },
     htmx: { process() {}, trigger() {} },
     fetch: async (url, options) => {
       requests.push({ url, headers: options.headers, body: String(options.body) });

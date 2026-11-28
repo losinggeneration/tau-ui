@@ -30,6 +30,7 @@ function harness() {
   };
   runInNewContext(script, {
     document, location,
+    EventSource: class { addEventListener() {} close() {} },
     history: { replaceState(_, __, url) { location.pathname = url; } },
     htmx: { process: () => calls.push("process"), trigger: (_, name) => calls.push(name) },
     localStorage: { getItem: () => null, setItem() {} },
