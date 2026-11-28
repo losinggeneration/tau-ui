@@ -2,6 +2,8 @@
 
 Tau UI is a standalone, phone-first web client for `tau daemon`. It uses Go templates and HTMX for the instance list, conversation, and forms. It doesn't serve or use Tau's bundled web interface, and it doesn't need Node.js or an Android SDK to run.
 
+<a href="http://tau-ui.losinggeneration.com/tau-ui.png"><img src="http://tau-ui.losinggeneration.com/tau-ui.png" width="480" alt="Tau UI — the instance sidebar on the left, an active conversation on the right"></a>
+
 ## Scope
 
 Tau UI is a personal project. I wrote it for my own use, and I have no desire to turn it into a community project. Fork it and modify it however you want. The [Universal Permissive License](LICENSE) allows that, but expect the design to follow my needs, not contributions or feature requests.
